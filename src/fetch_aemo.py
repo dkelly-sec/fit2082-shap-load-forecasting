@@ -1,6 +1,10 @@
 """
-Fetch AEMO NEMWEB half-hourly operational demand data for a single region
-and date range, and save a tidy CSV to data/raw/.
+Fetch AEMO half-hourly regional demand data using NEMOSIS
+(https://github.com/UNSW-CEEM/NEMOSIS), a maintained Python package built
+for exactly this purpose. It transparently pulls from AEMO's "Current"
+NEMWEB directory or the older MMS Data Model Archive depending on the date
+range requested, handles AEMO's row-dispatch CSV format internally, and
+caches downloaded files so repeated runs don't re-download from AEMO.
 
 Usage
 -----
@@ -8,140 +12,93 @@ Usage
 
 What this does
 ---------------
-1. Lists the NEMWEB directory for half-hourly operational demand reports.
-2. Downloads the zip files covering the configured date range (config.py).
-3. Unzips and parses each file with aemo_cidf.parse_cidf().
-4. Filters to the configured REGION.
-5. Concatenates everything and writes data/raw/aemo_demand_raw.csv.
+1. Calls nemosis.dynamic_data_compiler for the DISPATCHREGIONSUM table
+   over the configured date range (config.START_DATE / config.END_DATE).
+2. Filters to the configured REGION (config.REGION, default VIC1).
+3. Resamples TOTALDEMAND from 5-minute dispatch resolution to half-hourly
+   (mean), matching the project's target resolution.
+4. Writes data/raw/aemo_demand_raw.csv with columns: timestamp, demand.
 
-Important notes
-----------------
-* AEMO NEMWEB directory layout and retention policy can change without
-  notice, and the base URL migrated on 30 Apr 2026 (the old endpoint was
-  decommissioned 7 Apr 2026). If listing/downloads start failing, check
-  https://www.aemo.com.au/energy-systems/electricity/national-electricity-
-  market-nem/data-nem/market-data-nemweb for the current address and
-  update NEMWEB_BASE_URL / the report paths in config.py.
-* NEMWEB's "Current" directory typically only retains ~13 months of data.
-  For anything older, AEMO's data is instead in the MMS Data Model
-  Archive, which has a different structure (monthly zips of zips) --
-  you will likely need a second pass with a similar approach if your
-  START_DATE is more than ~13 months back from today.
-* This script does not run in this environment (AEMO's domain is not on
-  the sandbox's network allowlist) -- it has been written and reviewed
-  for correctness but not executed end-to-end. Run it locally / on your
-  own machine, and sanity-check the first few downloaded files by hand
-  before trusting the full pull.
+Notes
+-----
+* NEMOSIS downloads real AEMO files into config.NEMOSIS_CACHE_DIR the
+  first time you run this, which can be slow and use a fair amount of
+  disk space for a 2-year range (5-minute resolution across every NEM
+  region, before filtering). Subsequent runs reuse the cache.
+* This script has been written against NEMOSIS's documented API but not
+  run against the live AEMO site in this environment (AEMO's domain isn't
+  reachable from the sandbox this was built in). Run it yourself and
+  sanity-check the first few rows before trusting a full pull.
+* If NEMOSIS itself starts failing (e.g. AEMO changes its site structure
+  again), check https://github.com/UNSW-CEEM/NEMOSIS for updates -- it's
+  actively maintained, so a fix is more likely to already exist there
+  than in a hand-rolled scraper.
 """
 
 from __future__ import annotations
-import io
-import re
-import zipfile
-from datetime import date
-from urllib.parse import urljoin
-
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
+from nemosis import dynamic_data_compiler
 
 import config
-from aemo_cidf import parse_cidf
-
-TABLE_NAME = "ACTUAL_HH"  # matches operational demand half-hourly actual table
 
 
-def list_report_files(base_url: str, report_path: str) -> list[str]:
-    """Return absolute URLs of all files linked from a NEMWEB directory listing."""
-    listing_url = urljoin(base_url, report_path)
-    resp = requests.get(listing_url, timeout=30)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-    hrefs = [a.get("href") for a in soup.find_all("a") if a.get("href")]
-    # keep only zip/csv report files, drop navigation links like "../"
-    files = [h for h in hrefs if re.search(r"\.(zip|csv)$", h, re.IGNORECASE)]
-    return [urljoin(listing_url, f) for f in files]
+def fetch_demand() -> pd.DataFrame:
+    start_time = config.START_DATE.strftime("%Y/%m/%d %H:%M:%S")
+    # NEMOSIS's end_time is exclusive-ish at the boundary; push to the very
+    # end of END_DATE so the last day is fully included.
+    end_time = (
+        pd.Timestamp(config.END_DATE) + pd.Timedelta(hours=23, minutes=55)
+    ).strftime("%Y/%m/%d %H:%M:%S")
+
+    print(f"Fetching {config.NEMOSIS_TABLE} from {start_time} to {end_time} "
+          f"(this can take a while on first run while NEMOSIS builds its cache)...")
+
+    raw = dynamic_data_compiler(
+        start_time,
+        end_time,
+        config.NEMOSIS_TABLE,
+        str(config.NEMOSIS_CACHE_DIR),
+        select_columns=["SETTLEMENTDATE", "REGIONID", "TOTALDEMAND"],
+        fformat="parquet",
+    )
+
+    print(f"Retrieved {len(raw)} rows across all regions.")
+    return raw
 
 
-def date_from_filename(url: str) -> date | None:
-    """
-    Best-effort extraction of a YYYYMMDD date from an AEMO filename so we
-    can filter the file list down to the configured date range before
-    downloading everything.
-    """
-    m = re.search(r"(20\d{6})", url)
-    if not m:
-        return None
-    s = m.group(1)
-    try:
-        return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
-    except ValueError:
-        return None
+def filter_and_resample(raw: pd.DataFrame) -> pd.DataFrame:
+    df = raw[raw["REGIONID"] == config.REGION].copy()
+    print(f"Filtered to {config.REGION}: {len(df)} rows (5-minute resolution).")
 
+    df["SETTLEMENTDATE"] = pd.to_datetime(df["SETTLEMENTDATE"])
+    df = df.sort_values("SETTLEMENTDATE").set_index("SETTLEMENTDATE")
 
-def download_and_parse(url: str) -> pd.DataFrame:
-    resp = requests.get(url, timeout=60)
-    resp.raise_for_status()
+    half_hourly = df["TOTALDEMAND"].resample(config.FREQ).mean()
+    half_hourly = half_hourly.rename("demand").reset_index()
+    half_hourly = half_hourly.rename(columns={"SETTLEMENTDATE": "timestamp"})
 
-    if url.lower().endswith(".zip"):
-        frames = []
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-            for name in zf.namelist():
-                if not name.lower().endswith(".csv"):
-                    continue
-                with zf.open(name) as f:
-                    text = f.read().decode("utf-8", errors="replace")
-                frames.append(parse_cidf(text, table_name=TABLE_NAME))
-        if not frames:
-            return pd.DataFrame()
-        return pd.concat(frames, ignore_index=True)
-    else:
-        text = resp.content.decode("utf-8", errors="replace")
-        return parse_cidf(text, table_name=TABLE_NAME)
+    n_na = half_hourly["demand"].isna().sum()
+    print(f"Resampled to half-hourly: {len(half_hourly)} rows "
+          f"({n_na} empty half-hour windows -- these are genuine gaps in the "
+          f"source data, handled later by clean_merge.py's gap-filling step).")
+
+    return half_hourly
 
 
 def main():
-    print(f"Listing NEMWEB current reports at {config.NEMWEB_CURRENT_REPORT_PATH} ...")
-    all_files = list_report_files(config.NEMWEB_BASE_URL, config.NEMWEB_CURRENT_REPORT_PATH)
-    print(f"Found {len(all_files)} candidate files.")
-
-    in_range = []
-    for url in all_files:
-        d = date_from_filename(url)
-        if d is not None and config.START_DATE <= d <= config.END_DATE:
-            in_range.append(url)
-    print(f"{len(in_range)} files fall inside {config.START_DATE} .. {config.END_DATE}.")
-
-    if not in_range:
-        print(
-            "No files matched the configured date range in the 'Current' directory. "
-            "If your START_DATE is more than ~13 months old, you likely need to pull "
-            "from the MMS Data Model Archive instead -- see the module docstring."
+    raw = fetch_demand()
+    if raw.empty:
+        raise SystemExit(
+            "NEMOSIS returned no data. Check your network access to AEMO, "
+            "the date range in config.py, and that NEMOSIS is up to date "
+            "(pip install --upgrade nemosis)."
         )
 
-    frames = []
-    for i, url in enumerate(in_range, 1):
-        print(f"[{i}/{len(in_range)}] downloading {url}")
-        try:
-            df = download_and_parse(url)
-        except Exception as exc:  # noqa: BLE001
-            print(f"  failed: {exc}")
-            continue
-        if df.empty:
-            continue
-        if "REGIONID" in df.columns:
-            df = df[df["REGIONID"] == config.REGION]
-        frames.append(df)
-
-    if not frames:
-        raise SystemExit("No data collected -- check network access and NEMWEB paths.")
-
-    result = pd.concat(frames, ignore_index=True)
-    result = result.drop_duplicates()
+    half_hourly = filter_and_resample(raw)
 
     out_path = config.RAW_DIR / "aemo_demand_raw.csv"
-    result.to_csv(out_path, index=False)
-    print(f"Wrote {len(result)} rows to {out_path}")
+    half_hourly.to_csv(out_path, index=False)
+    print(f"Wrote {len(half_hourly)} rows to {out_path}")
 
 
 if __name__ == "__main__":

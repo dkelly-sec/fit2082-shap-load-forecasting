@@ -15,25 +15,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
 INTERIM_DIR = PROJECT_ROOT / "data" / "interim"
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+NEMOSIS_CACHE_DIR = PROJECT_ROOT / "data" / "raw" / "nemosis_cache"
 
-for _d in (RAW_DIR, INTERIM_DIR, PROCESSED_DIR):
+for _d in (RAW_DIR, INTERIM_DIR, PROCESSED_DIR, NEMOSIS_CACHE_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 # --------------------------------------------------------------------------
-# AEMO NEMWEB settings
+# AEMO settings (via the NEMOSIS package)
 # --------------------------------------------------------------------------
-# NOTE: AEMO decommissioned the old NEMweb HTTP endpoint on 7 Apr 2026 and
-# migrated the base URL on 30 Apr 2026. Verify this base URL is still live
-# before relying on it -- check https://www.aemo.com.au/energy-systems/
-# electricity/national-electricity-market-nem/data-nem/market-data-nemweb
-# for the current address if fetch_aemo.py starts failing.
-NEMWEB_BASE_URL = "https://nemweb.com.au"
-
-# Half-hourly actual operational demand by region, current reports directory.
-# (Only ~13 months are kept here; older data lives in the MMS Data Model
-# Archive under a different path -- see fetch_aemo.py docstring.)
-NEMWEB_CURRENT_REPORT_PATH = "/Reports/Current/Operational_Demand/ACTUAL_HH/"
-NEMWEB_ARCHIVE_REPORT_PATH = "/Reports/Archive/Operational_Demand/ACTUAL_HH/"
+# NEMOSIS (https://github.com/UNSW-CEEM/NEMOSIS) handles the Current vs.
+# Archive split, caching, and AEMO's row-dispatch CSV format internally, so
+# we don't need to hand-roll a NEMWEB scraper. It downloads
+# DISPATCHREGIONSUM at 5-minute resolution; fetch_aemo.py resamples this
+# to half-hourly (mean) to match the project's target resolution.
+NEMOSIS_TABLE = "DISPATCHREGIONSUM"
 
 # NEM region of interest
 REGION = "VIC1"
@@ -72,5 +67,5 @@ assert abs(TRAIN_FRAC + VAL_FRAC + TEST_FRAC - 1.0) < 1e-9
 # --------------------------------------------------------------------------
 # Resolution
 # --------------------------------------------------------------------------
-FREQ = "30min"  # half-hourly, matching AEMO demand data resolution
+FREQ = "30min"  # half-hourly, matching the project's target resolution
 TIMEZONE = "Australia/Melbourne"  # handles AEST/AEDT transitions

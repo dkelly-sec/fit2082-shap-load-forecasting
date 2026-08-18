@@ -20,10 +20,9 @@ pip install -r requirements.txt
 
 Edit `src/config.py` first:
 
-- `START_DATE` / `END_DATE` — your 2-year window
+- `START_DATE` / `END_DATE` — your 2-year window (currently 2024-01-01 to 2025-12-31)
 - `BOM_STATION_NAME` / `BOM_STATION_ID` — your chosen weather station
-- `EXCLUDED_PERIODS` — any anomaly windows you identify during EDA (e.g. a
-  documented COVID-disruption range, sensor outages)
+- `EXCLUDED_PERIODS` — any anomaly windows you identify during EDA
 
 ## Run
 
@@ -33,20 +32,27 @@ Edit `src/config.py` first:
 python src/fetch_aemo.py
 ```
 
-This was written and unit-tested against synthetic AEMO-format data but
-**has not been run against the live AEMO site** (its domain isn't reachable
-from the environment this was built in). Before trusting a full pull:
+This uses [NEMOSIS](https://github.com/UNSW-CEEM/NEMOSIS), a maintained
+Python package built specifically for downloading historical AEMO/NEM
+data — it handles the split between AEMO's "Current" NEMWEB directory and
+the older MMS Data Model Archive automatically, and caches downloaded
+files under `data/raw/nemosis_cache/` so repeated runs don't re-download.
 
-- Run it once and manually open the first downloaded file to confirm the
-  column mapping in `fetch_aemo.py` / `clean_merge.py` matches what AEMO
-  actually returns — table schemas do drift between MMSDM releases.
-- AEMO's "Current" NEMWEB directory only retains ~13 months of history. If
-  `START_DATE` is older than that, you'll need a second pass against the
-  MMS Data Model Archive (different URL structure) — see the docstring in
-  `fetch_aemo.py`.
-- AEMO migrated its NEMWEB base URL on 30 Apr 2026. If listing/downloads
-  fail outright, check the current address on AEMO's site and update
-  `NEMWEB_BASE_URL` in `config.py`.
+It pulls `DISPATCHREGIONSUM` (5-minute resolution) and resamples to
+half-hourly by taking the mean, which is standard practice for this kind
+of demand-forecasting work.
+
+Notes:
+- The first run can be slow and will use noticeable disk space, since
+  NEMOSIS downloads full monthly files before filtering to VIC1.
+- This was written against NEMOSIS's documented API but **not run against
+  the live AEMO site** in the environment this was built in (no network
+  access to AEMO's domain there). Run it yourself and sanity-check the
+  first few rows before trusting a full 2-year pull.
+- If it fails, check whether NEMOSIS needs updating
+  (`pip install --upgrade nemosis`) before assuming the pipeline code is
+  wrong — AEMO's site structure changes occasionally and NEMOSIS is
+  actively maintained to track it.
 
 ### 2. BOM weather data
 
@@ -96,21 +102,22 @@ data/processed/split_manifest.json
 ## Tests
 
 ```bash
-python tests/test_aemo_cidf.py
+python tests/test_fetch_aemo_resample.py
 ```
 
-Covers the AEMO row-dispatch (`C,`/`I,`/`D,`/`F,`) CSV parser using
-synthetic data, since it's the fiddliest and most failure-prone part of the
-pipeline and doesn't need network access to verify.
+Covers the 5-minute → half-hourly resampling and region-filtering logic in
+`fetch_aemo.py` using synthetic data, since it's the part most likely to
+have a subtle bug and doesn't need network access to verify.
 
 ## Before Week 5
 
-- [ ] Confirm `fetch_aemo.py` runs cleanly against the live site and spot-
-      check a few known dates (a public holiday, a heatwave day) by hand
+- [ ] Confirm `fetch_aemo.py` runs cleanly against the live site (NEMOSIS
+      may prompt you to accept AEMO's terms/agree to caching on first run)
+      and spot-check a few known dates (a public holiday, a heatwave day)
 - [ ] Confirm the BOM export's actual column headers match `load_bom.py`
-- [ ] Identify and log any anomaly windows (missing data, COVID period if
-      in range) in `EXCLUDED_PERIODS`
+- [ ] Identify and log any anomaly windows (missing data, sensor outages)
+      in `EXCLUDED_PERIODS`
 - [ ] Sanity-check `split_manifest.json` cutoff dates look right
-- [ ] Commit `data/processed/` outputs are *not* in git (see `.gitignore`)
-      but are reproducible by anyone who clones the repo and runs the
-      three scripts in order
+- [ ] Confirm `data/processed/` and `data/raw/nemosis_cache/` are *not* in
+      git (see `.gitignore`) but are reproducible by anyone who clones the
+      repo and runs the three scripts in order

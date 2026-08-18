@@ -3,8 +3,7 @@ Merge cleaned AEMO demand data and BOM weather data into a single
 half-hourly, feature-complete dataset, then produce a chronological
 train/validation/test split.
 
-Run after fetch_aemo.py (or a manual equivalent that produces
-data/raw/aemo_demand_raw.csv) and load_bom.py.
+Run after fetch_aemo.py and load_bom.py.
 
 Usage
 -----
@@ -32,38 +31,20 @@ def load_aemo_demand() -> pd.DataFrame:
     path = config.RAW_DIR / "aemo_demand_raw.csv"
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} not found. Run fetch_aemo.py first (or place an equivalent "
-            "CSV with SETTLEMENTDATE / REGIONID / OPERATIONAL_DEMAND columns there)."
+            f"{path} not found. Run fetch_aemo.py first."
         )
-    df = pd.read_csv(path)
+    df = pd.read_csv(path, parse_dates=["timestamp"])
 
-    # Column names come straight from AEMO's I-row headers; be tolerant of
-    # case/exact naming since AEMO table schemas do drift between versions.
-    rename_map = {}
-    for col in df.columns:
-        low = col.lower()
-        if "settlementdate" in low or (low == "date" or "interval" in low and "date" in low):
-            rename_map[col] = "timestamp"
-        elif low == "regionid":
-            rename_map[col] = "region"
-        elif "operational_demand" in low or low == "demand":
-            rename_map[col] = "demand"
-    df = df.rename(columns=rename_map)
-
-    required = {"timestamp", "region", "demand"}
+    required = {"timestamp", "demand"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(
-            f"aemo_demand_raw.csv is missing expected columns {missing} after "
-            f"renaming. Columns present: {list(df.columns)}. Check fetch_aemo.py's "
-            "column mapping matches the table you actually pulled."
+            f"aemo_demand_raw.csv is missing expected columns {missing}. "
+            f"Columns present: {list(df.columns)}."
         )
 
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-    df = df.dropna(subset=["timestamp"])
-    df = df[df["region"] == config.REGION]
     df["demand"] = pd.to_numeric(df["demand"], errors="coerce")
-    df = df[["timestamp", "demand"]].sort_values("timestamp").drop_duplicates(subset="timestamp")
+    df = df.sort_values("timestamp").drop_duplicates(subset="timestamp")
     return df
 
 

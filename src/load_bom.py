@@ -26,7 +26,6 @@ actual file the first time you run it.
 """
 
 from __future__ import annotations
-import re
 import sys
 
 import pandas as pd

@@ -8,6 +8,9 @@ data/processed/*
 !data/interim/.gitkeep
 !data/processed/.gitkeep
 
+# NEMOSIS's downloaded/cached AEMO files -- large, regenerable, don't commit
+data/raw/nemosis_cache/
+
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
