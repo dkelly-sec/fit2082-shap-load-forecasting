@@ -52,8 +52,8 @@ BOM_RAW_CSV = RAW_DIR / "bom_weather_raw.csv"
 # --------------------------------------------------------------------------
 # Date range (must give >= 2 full years; keep chronological, no shuffling)
 # --------------------------------------------------------------------------
-START_DATE = dt.date(2023, 1, 1)
-END_DATE = dt.date(2024, 12, 31)
+START_DATE = dt.date(2024, 1, 1)
+END_DATE = dt.date(2025, 12, 31)
 
 # Known anomalous periods to exclude (documented, not silently dropped).
 # Add (start, end, reason) tuples as you identify them during EDA.
