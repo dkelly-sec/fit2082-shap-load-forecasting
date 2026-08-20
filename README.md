@@ -8,6 +8,18 @@ Victorian electricity demand, BOM daily temperature (min/max/mean), and
 derived calendar features (day-of-week, public holiday flag, season) —
 ready to hand to the LightGBM forecaster in Week 5–6.
 
+## Status: Week 4 complete ✅
+
+Pipeline has been run end-to-end against real data:
+
+| Stage | Result |
+|---|---|
+| AEMO demand (`fetch_aemo.py`) | 35,088 half-hourly rows, 2024-01-01 → 2025-12-31, region VIC1, 0 gaps |
+| BOM weather (`load_bom.py`) | 731 daily rows, station 086338 (Melbourne, Olympic Park); 2 days had an incomplete min/max pair, filled from the nearest complete day rather than derived from a single reading |
+| Merge + split (`clean_merge.py`) | 35,088 rows merged with no loss; chronological split: train 24,561 / val 5,263 / test 5,264 (~70/15/15) |
+
+Next up: Week 5–6, EDA and LightGBM training via time-series CV.
+
 ## Setup
 
 ```bash
@@ -115,22 +127,29 @@ python tests/test_fetch_aemo_resample.py
 python tests/test_bom_merge.py
 ```
 
-Cover the 5-minute→half-hourly resampling, BOM CSV parsing, and the daily-
-to-half-hourly broadcast merge using synthetic data — no network access
-needed to verify the core logic.
+Cover the 5-minute→half-hourly resampling, BOM CSV parsing, the
+missing-reading-does-not-silently-average-to-one-value fix, and the
+daily-to-half-hourly broadcast merge — all using synthetic data, no
+network access needed.
 
 ## Before Week 5
 
 - [x] `fetch_aemo.py` run against live AEMO data (35,088 rows — matches
       exactly 2 years of half-hourly data, leap year included)
-- [ ] Confirm the BOM daily temperature values look sane on a spot-check
-      date (e.g. does a January day show summer-appropriate max temps?)
+- [x] `load_bom.py` run against live BOM data (731 days). 2 days had an
+      incomplete min/max pair — `temperature` for those is filled from the
+      nearest complete day rather than silently derived from a single
+      reading (see the comment in `load_bom_daily()` if you want to know
+      why that distinction matters)
+- [x] `clean_merge.py` run end-to-end — 35,088 rows merged with no loss,
+      chronological 70/15/15 split written, `split_manifest.json` produced
 - [ ] Identify and log any anomaly windows (missing data, sensor outages)
-      in `EXCLUDED_PERIODS`
+      in `EXCLUDED_PERIODS` — none identified yet; revisit during EDA
 - [ ] Sanity-check `split_manifest.json` cutoff dates look right
-- [ ] Note the temperature-only (no humidity, daily not half-hourly)
+- [x] Note the temperature-only (no humidity, daily not half-hourly)
       weather scope in your report/EDA as a documented deviation from the
       original proposal, with the reasoning (BOM's free-tier limitations)
-- [ ] Confirm `data/processed/` and `data/raw/nemosis_cache/` are *not* in
-      git (see `.gitignore`) but are reproducible by anyone who clones the
-      repo and runs the three scripts in order
+      — see the "BOM weather data" section above, reuse that wording
+- [x] Confirmed `data/processed/` and `data/raw/nemosis_cache/` are *not*
+      in git (see `.gitignore`) but are reproducible by anyone who clones
+      the repo and runs the three scripts in order
