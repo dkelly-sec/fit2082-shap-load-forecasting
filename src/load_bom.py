@@ -116,9 +116,28 @@ def load_bom_daily() -> pd.DataFrame:
 
     n_missing_either = merged[["temp_min", "temp_max"]].isna().any(axis=1).sum()
     if n_missing_either:
-        print(f"  warning: {n_missing_either} days are missing min and/or max temperature")
+        incomplete_dates = merged.loc[
+            merged[["temp_min", "temp_max"]].isna().any(axis=1), "date"
+        ].dt.date.tolist()
+        print(f"  {n_missing_either} day(s) are missing min and/or max temperature: "
+              f"{incomplete_dates}")
 
-    merged["temperature"] = merged[["temp_min", "temp_max"]].mean(axis=1)
+    # Require BOTH min and max to compute a genuine daily mean -- a day with
+    # only one reading present should not silently pass off that single
+    # reading as the day's average (pandas' default .mean(skipna=True)
+    # would otherwise do exactly that, understating/overstating the true
+    # mean, especially in summer when the min/max spread is large).
+    both_present = merged[["temp_min", "temp_max"]].notna().all(axis=1)
+    merged["temperature"] = merged[["temp_min", "temp_max"]].mean(axis=1).where(both_present)
+
+    # Fill the resulting isolated daily gaps (missing reading, not a missing
+    # date) from the nearest available day, since a single missing input on
+    # an otherwise-complete day is best treated as a short gap, not dropped.
+    n_gap_days = merged["temperature"].isna().sum()
+    if n_gap_days:
+        merged["temperature"] = merged["temperature"].ffill().bfill()
+        print(f"  filled {n_gap_days} day(s) with incomplete min/max by carrying "
+              "the nearest available day's temperature forward/backward")
 
     out_path = config.INTERIM_DIR / "bom_weather_clean.csv"
     merged.to_csv(out_path, index=False)
