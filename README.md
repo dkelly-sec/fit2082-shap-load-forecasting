@@ -4,7 +4,7 @@ Data acquisition and cleaning pipeline for *Sampling Sensitivity of Global
 SHAP Feature Rankings in Short-Term Electricity Demand Forecasting*.
 
 Produces a clean, half-hourly, chronologically-split dataset combining AEMO
-Victorian electricity demand, BOM weather (temperature, humidity), and
+Victorian electricity demand, BOM daily temperature (min/max/mean), and
 derived calendar features (day-of-week, public holiday flag, season) —
 ready to hand to the LightGBM forecaster in Week 5–6.
 
@@ -32,47 +32,53 @@ Edit `src/config.py` first:
 python src/fetch_aemo.py
 ```
 
-This uses [NEMOSIS](https://github.com/UNSW-CEEM/NEMOSIS), a maintained
-Python package built specifically for downloading historical AEMO/NEM
-data — it handles the split between AEMO's "Current" NEMWEB directory and
-the older MMS Data Model Archive automatically, and caches downloaded
-files under `data/raw/nemosis_cache/` so repeated runs don't re-download.
-
-It pulls `DISPATCHREGIONSUM` (5-minute resolution) and resamples to
-half-hourly by taking the mean, which is standard practice for this kind
-of demand-forecasting work.
-
-Notes:
-- The first run can be slow and will use noticeable disk space, since
-  NEMOSIS downloads full monthly files before filtering to VIC1.
-- This was written against NEMOSIS's documented API but **not run against
-  the live AEMO site** in the environment this was built in (no network
-  access to AEMO's domain there). Run it yourself and sanity-check the
-  first few rows before trusting a full 2-year pull.
-- If it fails, check whether NEMOSIS needs updating
-  (`pip install --upgrade nemosis`) before assuming the pipeline code is
-  wrong — AEMO's site structure changes occasionally and NEMOSIS is
-  actively maintained to track it.
+Uses [NEMOSIS](https://github.com/UNSW-CEEM/NEMOSIS), a maintained Python
+package for downloading historical AEMO/NEM data. Pulls `DISPATCHREGIONSUM`
+(5-minute resolution) and resamples to half-hourly by taking the mean.
+First run can be slow while NEMOSIS builds its local cache under
+`data/raw/nemosis_cache/`.
 
 ### 2. BOM weather data
 
-BOM's Climate Data Online doesn't offer free bulk sub-daily downloads via a
-simple API — get it manually:
+BOM's Climate Data Online only offers **daily** temperature for free
+download (no free half-hourly/hourly station archive over a multi-year
+span — that requires a paid Data Services request). Humidity generally
+isn't freely available either, so this project uses daily min/max/mean
+temperature only — worth a line in your report noting the substitution
+from the original half-hourly weather plan.
 
-1. Find your station: <https://www.bom.gov.au/climate/data-services/station-data.shtml>
-2. Download temperature + humidity for your date range as CSV from
-   <http://www.bom.gov.au/climate/data/>
-3. Save it as `data/raw/bom_weather_raw.csv`
+To get the data:
 
-Then run:
+1. Go to <http://www.bom.gov.au/climate/data/>
+2. Text search → Data about: **Temperature** → Type of data: **Daily** →
+   **Minimum temperature**. Search your station (e.g. "Melbourne") and
+   select it (e.g. `086338 Melbourne (Olympic Park)`).
+3. Click **Get Data** → on the page that opens, click **"1 year of data"**
+   (repeat per year) or **"All years of data"** (one click, then the
+   pipeline filters to your configured date range automatically).
+4. This downloads a zip that your browser/OS likely auto-extracts into a
+   folder like `IDCJAC0011_086338_2024/`. Move that folder as-is into
+   `data/raw/`.
+5. Repeat steps 2–4 with **Maximum temperature** instead of Minimum.
+
+You should end up with folders like this inside `data/raw/`:
+
+```
+data/raw/IDCJAC0011_086338_2024/   (minimum temperature)
+data/raw/IDCJAC0011_086338_2025/
+data/raw/IDCJAC0010_086338_2024/   (maximum temperature)
+data/raw/IDCJAC0010_086338_2025/
+```
+
+`load_bom.py` finds these automatically by folder-name pattern — you don't
+need to list exact filenames anywhere. Then run:
 
 ```bash
 python src/load_bom.py
 ```
 
-If it can't find the temperature/humidity/timestamp columns, it'll print
-the actual column names it found — update `COLUMN_KEYWORDS` in
-`src/load_bom.py` to match your file.
+This combines all matching min/max files, computes a daily mean
+temperature, and filters to your configured date range.
 
 ### 3. Merge, add features, split
 
@@ -80,14 +86,17 @@ the actual column names it found — update `COLUMN_KEYWORDS` in
 python src/clean_merge.py
 ```
 
-This merges demand + weather on timestamp, adds `day_of_week`,
-`is_weekend`, `is_public_holiday` (Victorian holidays via the `holidays`
-package), and `season`; reindexes to a complete half-hourly grid and
-linearly interpolates gaps up to 2 hours (longer gaps are left as NaN and
-reported, not silently filled); applies any `EXCLUDED_PERIODS`; and writes
-a chronological 70/15/15 train/val/test split plus a `split_manifest.json`
-recording the exact date cutoffs used, so every later experiment can
-reference the same split.
+This:
+- Reindexes demand to a complete half-hourly grid and linearly
+  interpolates demand gaps up to 2 hours (longer gaps are left as NaN and
+  reported, not silently filled)
+- Adds `day_of_week`, `is_weekend`, `is_public_holiday` (Victorian
+  holidays via the `holidays` package), and `season`
+- Merges in daily weather, broadcasting each day's temperature values
+  across that day's 48 half-hourly demand rows
+- Applies any `EXCLUDED_PERIODS`
+- Writes a chronological 70/15/15 train/val/test split plus a
+  `split_manifest.json` recording the exact date cutoffs used
 
 Outputs:
 
@@ -103,21 +112,25 @@ data/processed/split_manifest.json
 
 ```bash
 python tests/test_fetch_aemo_resample.py
+python tests/test_bom_merge.py
 ```
 
-Covers the 5-minute → half-hourly resampling and region-filtering logic in
-`fetch_aemo.py` using synthetic data, since it's the part most likely to
-have a subtle bug and doesn't need network access to verify.
+Cover the 5-minute→half-hourly resampling, BOM CSV parsing, and the daily-
+to-half-hourly broadcast merge using synthetic data — no network access
+needed to verify the core logic.
 
 ## Before Week 5
 
-- [ ] Confirm `fetch_aemo.py` runs cleanly against the live site (NEMOSIS
-      may prompt you to accept AEMO's terms/agree to caching on first run)
-      and spot-check a few known dates (a public holiday, a heatwave day)
-- [ ] Confirm the BOM export's actual column headers match `load_bom.py`
+- [x] `fetch_aemo.py` run against live AEMO data (35,088 rows — matches
+      exactly 2 years of half-hourly data, leap year included)
+- [ ] Confirm the BOM daily temperature values look sane on a spot-check
+      date (e.g. does a January day show summer-appropriate max temps?)
 - [ ] Identify and log any anomaly windows (missing data, sensor outages)
       in `EXCLUDED_PERIODS`
 - [ ] Sanity-check `split_manifest.json` cutoff dates look right
+- [ ] Note the temperature-only (no humidity, daily not half-hourly)
+      weather scope in your report/EDA as a documented deviation from the
+      original proposal, with the reasoning (BOM's free-tier limitations)
 - [ ] Confirm `data/processed/` and `data/raw/nemosis_cache/` are *not* in
       git (see `.gitignore`) but are reproducible by anyone who clones the
       repo and runs the three scripts in order

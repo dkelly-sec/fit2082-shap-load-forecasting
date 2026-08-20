@@ -1,7 +1,11 @@
 """
-Merge cleaned AEMO demand data and BOM weather data into a single
-half-hourly, feature-complete dataset, then produce a chronological
-train/validation/test split.
+Merge cleaned AEMO half-hourly demand data with BOM daily temperature data
+into a single half-hourly, feature-complete dataset, then produce a
+chronological train/validation/test split.
+
+Weather is daily (see load_bom.py for why), so each day's temp_min/
+temp_max/temperature values are broadcast across that day's 48 half-hourly
+demand rows -- equivalent to a forward-fill within each day.
 
 Run after fetch_aemo.py and load_bom.py.
 
@@ -30,9 +34,7 @@ import config
 def load_aemo_demand() -> pd.DataFrame:
     path = config.RAW_DIR / "aemo_demand_raw.csv"
     if not path.exists():
-        raise FileNotFoundError(
-            f"{path} not found. Run fetch_aemo.py first."
-        )
+        raise FileNotFoundError(f"{path} not found. Run fetch_aemo.py first.")
     df = pd.read_csv(path, parse_dates=["timestamp"])
 
     required = {"timestamp", "demand"}
@@ -48,11 +50,11 @@ def load_aemo_demand() -> pd.DataFrame:
     return df
 
 
-def load_weather() -> pd.DataFrame:
+def load_weather_daily() -> pd.DataFrame:
     path = config.INTERIM_DIR / "bom_weather_clean.csv"
     if not path.exists():
         raise FileNotFoundError(f"{path} not found. Run load_bom.py first.")
-    df = pd.read_csv(path, parse_dates=["timestamp"])
+    df = pd.read_csv(path, parse_dates=["date"])
     return df
 
 
@@ -89,12 +91,14 @@ def apply_exclusions(df: pd.DataFrame) -> pd.DataFrame:
     return df[~mask]
 
 
-def fill_small_gaps(df: pd.DataFrame, max_gap_intervals: int = 4) -> pd.DataFrame:
+def fill_demand_gaps(df: pd.DataFrame, max_gap_intervals: int = 4) -> pd.DataFrame:
     """
-    Reindex to a complete half-hourly grid and linearly interpolate gaps up
-    to `max_gap_intervals` long (default: 4 * 30min = 2 hours). Longer gaps
-    are left as NaN and reported, rather than silently interpolated --
-    decide explicitly whether to drop those rows or extend this rule.
+    Reindex demand to a complete half-hourly grid and linearly interpolate
+    gaps up to `max_gap_intervals` long (default: 4 * 30min = 2 hours).
+    Longer gaps are left as NaN and reported, rather than silently
+    interpolated -- decide explicitly whether to drop those rows or extend
+    this rule. This only touches `demand`; weather columns are handled
+    separately since they're daily, not half-hourly (see merge_all).
     """
     df = df.set_index("timestamp").sort_index()
     full_index = pd.date_range(df.index.min(), df.index.max(), freq=config.FREQ)
@@ -102,21 +106,34 @@ def fill_small_gaps(df: pd.DataFrame, max_gap_intervals: int = 4) -> pd.DataFram
     df = df.reindex(full_index)
     df.index.name = "timestamp"
 
-    numeric_cols = df.select_dtypes(include="number").columns
-    df[numeric_cols] = df[numeric_cols].interpolate(
+    df["demand"] = df["demand"].interpolate(
         method="linear", limit=max_gap_intervals, limit_area="inside"
     )
 
-    remaining_na = df[numeric_cols].isna().any(axis=1).sum()
-    print(f"Reindexed to {len(full_index)} half-hourly slots "
+    remaining_na = df["demand"].isna().sum()
+    print(f"Reindexed demand to {len(full_index)} half-hourly slots "
           f"({n_missing_before} were missing before interpolation).")
-    print(f"{remaining_na} rows still have NaNs after interpolation "
+    print(f"{remaining_na} demand rows still have NaNs after interpolation "
           f"(gaps longer than {max_gap_intervals} intervals) -- inspect these before modelling.")
 
-    df = df.reset_index()
-    # re-derive calendar features for any rows that were pure gaps (they won't have them yet)
-    df = add_calendar_features(df)
-    return df
+    return df.reset_index()
+
+
+def merge_all(demand: pd.DataFrame, weather_daily: pd.DataFrame) -> pd.DataFrame:
+    demand = demand.copy()
+    demand["date"] = demand["timestamp"].dt.normalize()
+
+    merged = pd.merge(demand, weather_daily, on="date", how="left")
+    merged = merged.drop(columns=["date"])
+
+    n_missing_weather = merged["temperature"].isna().sum()
+    if n_missing_weather:
+        print(f"  {n_missing_weather} half-hourly rows have no matching daily weather "
+              "(their date wasn't in the BOM files) -- these will have NaN weather "
+              "features and are not auto-filled; extend the BOM date range or drop "
+              "these rows before modelling.")
+
+    return merged
 
 
 def chronological_split(df: pd.DataFrame):
@@ -141,17 +158,14 @@ def chronological_split(df: pd.DataFrame):
 
 def main():
     demand = load_aemo_demand()
-    weather = load_weather()
+    demand = fill_demand_gaps(demand)
+    demand = apply_exclusions(demand)
+    demand = add_calendar_features(demand)
 
-    merged = pd.merge(demand, weather, on="timestamp", how="left")
-    print(f"Merged demand ({len(demand)} rows) with weather -> {len(merged)} rows.")
-    n_missing_weather = merged["temperature"].isna().sum()
-    if n_missing_weather:
-        print(f"  {n_missing_weather} rows have no matching weather observation "
-              "(will be addressed by the gap-filling step below).")
+    weather_daily = load_weather_daily()
 
-    merged = apply_exclusions(merged)
-    merged = fill_small_gaps(merged)
+    merged = merge_all(demand, weather_daily)
+    print(f"Merged demand ({len(demand)} rows) with daily weather -> {len(merged)} rows.")
 
     full_path = config.INTERIM_DIR / "merged_full.csv"
     merged.to_csv(full_path, index=False)

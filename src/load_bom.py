@@ -1,101 +1,134 @@
 """
-Load and standardise Bureau of Meteorology weather data.
+Load and combine Bureau of Meteorology daily temperature data.
 
-BOM's Climate Data Online does not offer a simple free bulk-download API
-for sub-daily station data -- you request/download it interactively:
+BOM's free Climate Data Online download only offers DAILY resolution for
+temperature (no free half-hourly/hourly station archive over a multi-year
+span -- that requires a paid Data Services request). This project uses
+daily minimum and maximum temperature instead, forward-filled across each
+day's half-hourly slots in clean_merge.py. Humidity was not freely
+available for this station either, so it's out of scope for this project
+-- worth a line in your report/EDA noting the substitution.
 
-    1. Go to http://www.bom.gov.au/climate/data/
-       (or use the Weather Station Directory to find your station first:
-       https://www.bom.gov.au/climate/data-services/station-data.shtml)
-    2. Search for your chosen station (config.BOM_STATION_NAME /
-       config.BOM_STATION_ID), select temperature + humidity, and the
-       finest available sub-daily resolution.
-    3. Set the date range to match config.START_DATE / config.END_DATE.
-    4. Download the CSV and save it to the path in config.BOM_RAW_CSV
-       (data/raw/bom_weather_raw.csv by default).
+Expected input
+--------------
+Each BOM download comes as a folder (BOM zips it; your browser/OS may
+auto-extract it) named like:
 
-This script then loads that file, standardises column names/timestamp
-format, and writes a cleaned version to data/interim/.
+    IDCJAC0011_086338_2024/
+        IDCJAC0011_086338_2024_Data.csv   <- the actual data
+        IDCJAC0011_086338_2024_Note.txt   <- ignored
 
-BOM's exported CSVs vary a bit in exact column naming depending on the
-product, so this loader is deliberately tolerant: it looks for columns by
-keyword rather than assuming an exact header, and will raise a clear error
-telling you what it found if it can't confidently match temperature/
-humidity/timestamp columns. Check the printed column mapping against your
-actual file the first time you run it.
+    IDCJAC0011_*  = daily minimum temperature
+    IDCJAC0010_*  = daily maximum temperature
+
+Place all four folders (min/max x 2024/2025, or however many years you
+downloaded) directly inside data/raw/ -- this script finds them
+automatically by matching the IDCJAC0010_*/IDCJAC0011_* folder name
+pattern, so you don't need to list exact filenames anywhere.
+
+Usage
+-----
+    python src/load_bom.py
+
+Output
+------
+    data/interim/bom_weather_clean.csv
+    columns: date, temp_min, temp_max, temperature (mean of min/max)
 """
 
 from __future__ import annotations
 import sys
+from pathlib import Path
 
 import pandas as pd
 
 import config
 
-# keyword -> standardised column name
-COLUMN_KEYWORDS = {
-    "timestamp": ["date", "time", "local"],
-    "temperature": ["air temp", "temperature", "temp"],
-    "humidity": ["relative humidity", "humidity", "rh"],
-}
+MIN_TEMP_PATTERN = "IDCJAC0011_*"
+MAX_TEMP_PATTERN = "IDCJAC0010_*"
 
 
-def _find_column(columns: list[str], keywords: list[str]) -> str | None:
-    lowered = {c: c.lower() for c in columns}
-    for kw in keywords:
-        for original, low in lowered.items():
-            if kw in low:
-                return original
-    return None
+def _find_data_csvs(pattern: str) -> list[Path]:
+    folders = sorted(config.RAW_DIR.glob(pattern))
+    csvs = []
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        matches = list(folder.glob("*_Data.csv"))
+        if not matches:
+            print(f"  warning: no *_Data.csv found inside {folder}")
+            continue
+        csvs.append(matches[0])
+    return csvs
 
 
-def load_bom_csv(path=None) -> pd.DataFrame:
-    path = path or config.BOM_RAW_CSV
-    if not path.exists():
-        raise FileNotFoundError(
-            f"{path} not found. Download the BOM CSV manually first -- see the "
-            "module docstring in load_bom.py for the exact steps -- and save it "
-            "to that path (or pass a different path to load_bom_csv())."
-        )
-
-    raw = pd.read_csv(path)
-    print(f"Loaded {path} with columns: {list(raw.columns)}")
-
-    col_map = {}
-    for std_name, keywords in COLUMN_KEYWORDS.items():
-        found = _find_column(list(raw.columns), keywords)
-        if found is None:
+def _load_bom_temp_csvs(csv_paths: list[Path], value_keyword: str, out_col: str) -> pd.DataFrame:
+    frames = []
+    for path in csv_paths:
+        df = pd.read_csv(path)
+        value_col = next((c for c in df.columns if value_keyword.lower() in c.lower()), None)
+        if value_col is None:
             raise ValueError(
-                f"Could not find a column matching '{std_name}' (looked for "
-                f"keywords {keywords}) in {list(raw.columns)}. Update "
-                "COLUMN_KEYWORDS in load_bom.py to match your file's actual "
-                "headers."
+                f"Could not find a column containing '{value_keyword}' in {path}. "
+                f"Columns present: {list(df.columns)}."
             )
-        col_map[found] = std_name
-        print(f"  mapped '{found}' -> '{std_name}'")
+        df["date"] = pd.to_datetime(dict(year=df["Year"], month=df["Month"], day=df["Day"]))
+        df = df[["date", value_col]].rename(columns={value_col: out_col})
+        frames.append(df)
+        print(f"  loaded {len(df)} rows from {path.name}")
 
-    df = raw[list(col_map.keys())].rename(columns=col_map)
+    if not frames:
+        return pd.DataFrame(columns=["date", out_col])
 
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", dayfirst=True)
-    n_bad = df["timestamp"].isna().sum()
-    if n_bad:
-        print(f"  warning: {n_bad} rows had unparseable timestamps and will be dropped")
-    df = df.dropna(subset=["timestamp"])
+    combined = pd.concat(frames, ignore_index=True)
+    combined[out_col] = pd.to_numeric(combined[out_col], errors="coerce")
+    combined = combined.sort_values("date").drop_duplicates(subset="date")
+    return combined
 
-    for col in ("temperature", "humidity"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df = df.sort_values("timestamp").drop_duplicates(subset="timestamp")
+def load_bom_daily() -> pd.DataFrame:
+    print("Looking for minimum temperature files...")
+    min_files = _find_data_csvs(MIN_TEMP_PATTERN)
+    if not min_files:
+        raise FileNotFoundError(
+            f"No folders matching '{MIN_TEMP_PATTERN}' found in {config.RAW_DIR}. "
+            "Download minimum temperature from BOM Climate Data Online and place "
+            "the extracted folder(s) directly in data/raw/."
+        )
+    min_temp = _load_bom_temp_csvs(min_files, "Minimum temperature", "temp_min")
+
+    print("Looking for maximum temperature files...")
+    max_files = _find_data_csvs(MAX_TEMP_PATTERN)
+    if not max_files:
+        raise FileNotFoundError(
+            f"No folders matching '{MAX_TEMP_PATTERN}' found in {config.RAW_DIR}. "
+            "Download maximum temperature from BOM Climate Data Online and place "
+            "the extracted folder(s) directly in data/raw/."
+        )
+    max_temp = _load_bom_temp_csvs(max_files, "Maximum temperature", "temp_max")
+
+    merged = pd.merge(min_temp, max_temp, on="date", how="outer").sort_values("date")
+
+    n_before = len(merged)
+    merged = merged[(merged["date"].dt.date >= config.START_DATE) &
+                     (merged["date"].dt.date <= config.END_DATE)]
+    print(f"Filtered to configured date range: {len(merged)} of {n_before} rows kept.")
+
+    n_missing_either = merged[["temp_min", "temp_max"]].isna().any(axis=1).sum()
+    if n_missing_either:
+        print(f"  warning: {n_missing_either} days are missing min and/or max temperature")
+
+    merged["temperature"] = merged[["temp_min", "temp_max"]].mean(axis=1)
 
     out_path = config.INTERIM_DIR / "bom_weather_clean.csv"
-    df.to_csv(out_path, index=False)
-    print(f"Wrote {len(df)} rows to {out_path}")
-    return df
+    merged.to_csv(out_path, index=False)
+    print(f"Wrote {len(merged)} daily rows to {out_path}")
+    return merged
 
 
 if __name__ == "__main__":
     try:
-        load_bom_csv()
+        load_bom_daily()
     except (FileNotFoundError, ValueError) as exc:
         print(f"\n{exc}\n", file=sys.stderr)
         sys.exit(1)
