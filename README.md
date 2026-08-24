@@ -1,24 +1,19 @@
-# FIT2082 Data Pipeline — Week 4
+# FIT2082 Data Pipeline
 
 Data acquisition and cleaning pipeline for *Sampling Sensitivity of Global
 SHAP Feature Rankings in Short-Term Electricity Demand Forecasting*.
 
-Produces a clean, half-hourly, chronologically-split dataset combining AEMO
-Victorian electricity demand, BOM daily temperature (min/max/mean), and
-derived calendar features (day-of-week, public holiday flag, season) —
-ready to hand to the LightGBM forecaster in Week 5–6.
+Produces a clean, chronologically-split dataset combining AEMO Victorian
+electricity demand (native 5-minute resolution, per supervisor direction),
+BOM daily temperature, renewables.ninja hourly solar irradiance, and
+derived calendar features (day-of-week, public holiday flag, season).
 
-## Status: Week 4 complete ✅
+## Project status
 
-Pipeline has been run end-to-end against real data:
-
-| Stage | Result |
-|---|---|
-| AEMO demand (`fetch_aemo.py`) | 35,088 half-hourly rows, 2024-01-01 → 2025-12-31, region VIC1, 0 gaps |
-| BOM weather (`load_bom.py`) | 731 daily rows, station 086338 (Melbourne, Olympic Park); 2 days had an incomplete min/max pair, filled from the nearest complete day rather than derived from a single reading |
-| Merge + split (`clean_merge.py`) | 35,088 rows merged with no loss; chronological split: train 24,561 / val 5,263 / test 5,264 (~70/15/15) |
-
-Next up: Week 5–6, EDA and LightGBM training via time-series CV.
+Per Zeehan's Week 4 feedback email and follow-up meeting direction:
+- AEMO demand stays at its **native 5-minute resolution** — no resampling.
+- Weather now includes **both temperature (BOM) and irradiance
+  (renewables.ninja)**, not temperature alone.
 
 ## Setup
 
@@ -28,87 +23,82 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### Renewables.ninja API token
+
+Sign up for a free account at <https://www.renewables.ninja/register>,
+find your API token on your account page, then set it as an environment
+variable — **never commit it to git**:
+
+```bash
+# Windows PowerShell
+$env:RENEWABLES_NINJA_TOKEN = "your_token_here"
+
+# Mac/Linux
+export RENEWABLES_NINJA_TOKEN="your_token_here"
+```
+
 ## Configure
 
-Edit `src/config.py` first:
+Edit `src/config.py`:
 
 - `START_DATE` / `END_DATE` — your 2-year window (currently 2024-01-01 to 2025-12-31)
-- `BOM_STATION_NAME` / `BOM_STATION_ID` — your chosen weather station
+- `REGION` — NEM region of interest (currently VIC1)
+- `LATITUDE` / `LONGITUDE` — location for temperature and irradiance (currently Melbourne, Olympic Park)
 - `EXCLUDED_PERIODS` — any anomaly windows you identify during EDA
 
 ## Run
 
-### 1. AEMO demand data
+### 1. AEMO demand data (native 5-minute resolution)
 
 ```bash
 python src/fetch_aemo.py
 ```
 
-Uses [NEMOSIS](https://github.com/UNSW-CEEM/NEMOSIS), a maintained Python
-package for downloading historical AEMO/NEM data. Pulls `DISPATCHREGIONSUM`
-(5-minute resolution) and resamples to half-hourly by taking the mean.
-First run can be slow while NEMOSIS builds its local cache under
-`data/raw/nemosis_cache/`.
+Uses [NEMOSIS](https://github.com/UNSW-CEEM/NEMOSIS) to pull
+`DISPATCHREGIONSUM` and keeps its native 5-minute resolution — no
+resampling. Drops AEMO's intervention-pricing-run duplicate rows (keeps
+only `INTERVENTION == 0`, the physical dispatch run).
 
-### 2. BOM weather data
+### 2. BOM temperature data (daily)
 
-BOM's Climate Data Online only offers **daily** temperature for free
-download (no free half-hourly/hourly station archive over a multi-year
-span — that requires a paid Data Services request). Humidity generally
-isn't freely available either, so this project uses daily min/max/mean
-temperature only — worth a line in your report noting the substitution
-from the original half-hourly weather plan.
+BOM's free download only offers daily temperature — see the docstring in
+`src/load_bom.py` for the exact download steps (Climate Data Online, min
+and max temperature, per year or all years, station 086338).
 
-To get the data:
-
-1. Go to <http://www.bom.gov.au/climate/data/>
-2. Text search → Data about: **Temperature** → Type of data: **Daily** →
-   **Minimum temperature**. Search your station (e.g. "Melbourne") and
-   select it (e.g. `086338 Melbourne (Olympic Park)`).
-3. Click **Get Data** → on the page that opens, click **"1 year of data"**
-   (repeat per year) or **"All years of data"** (one click, then the
-   pipeline filters to your configured date range automatically).
-4. This downloads a zip that your browser/OS likely auto-extracts into a
-   folder like `IDCJAC0011_086338_2024/`. Move that folder as-is into
-   `data/raw/`.
-5. Repeat steps 2–4 with **Maximum temperature** instead of Minimum.
-
-You should end up with folders like this inside `data/raw/`:
-
-```
-data/raw/IDCJAC0011_086338_2024/   (minimum temperature)
-data/raw/IDCJAC0011_086338_2025/
-data/raw/IDCJAC0010_086338_2024/   (maximum temperature)
-data/raw/IDCJAC0010_086338_2025/
-```
-
-`load_bom.py` finds these automatically by folder-name pattern — you don't
-need to list exact filenames anywhere. Then run:
+Place the downloaded folders (e.g. `IDCJAC0011_086338_2024/`,
+`IDCJAC0010_086338_2024/`) directly in `data/raw/`, then:
 
 ```bash
 python src/load_bom.py
 ```
 
-This combines all matching min/max files, computes a daily mean
-temperature, and filters to your configured date range.
+### 3. Renewables.ninja irradiance data (hourly)
 
-### 3. Merge, add features, split
+```bash
+python src/fetch_irradiance.py
+```
+
+Pulls hourly solar irradiance/PV simulation data via the renewables.ninja
+API, one calendar year at a time (free-tier rate limits). Uses the
+`merra2` dataset — the higher-resolution `sarah` dataset does **not**
+cover Australia, only Europe/Africa/Middle East.
+
+### 4. Merge, add features, split
 
 ```bash
 python src/clean_merge.py
 ```
 
 This:
-- Reindexes demand to a complete half-hourly grid and linearly
-  interpolates demand gaps up to 2 hours (longer gaps are left as NaN and
-  reported, not silently filled)
-- Adds `day_of_week`, `is_weekend`, `is_public_holiday` (Victorian
-  holidays via the `holidays` package), and `season`
-- Merges in daily weather, broadcasting each day's temperature values
-  across that day's 48 half-hourly demand rows
+- Reindexes demand to a complete 5-minute grid and interpolates gaps up to
+  2 hours (longer gaps left as NaN and reported)
+- Adds calendar features (`day_of_week`, `is_weekend`, `is_public_holiday`,
+  `season`)
+- Broadcasts each day's temperature and each hour's irradiance across the
+  relevant 5-minute demand rows
 - Applies any `EXCLUDED_PERIODS`
-- Writes a chronological 70/15/15 train/val/test split plus a
-  `split_manifest.json` recording the exact date cutoffs used
+- Writes a chronological 70/15/15 train/val/test split plus
+  `split_manifest.json`
 
 Outputs:
 
@@ -123,33 +113,21 @@ data/processed/split_manifest.json
 ## Tests
 
 ```bash
-python tests/test_fetch_aemo_resample.py
-python tests/test_bom_merge.py
+python tests/test_fetch_aemo_native.py
+python tests/test_merge_multi_resolution.py
 ```
 
-Cover the 5-minute→half-hourly resampling, BOM CSV parsing, the
-missing-reading-does-not-silently-average-to-one-value fix, and the
-daily-to-half-hourly broadcast merge — all using synthetic data, no
-network access needed.
+Cover region-filtering, intervention-duplicate handling, native-resolution
+preservation, and the two-tier broadcast merge (daily temperature, hourly
+irradiance, both onto 5-minute demand) — synthetic data, no network needed.
 
 ## Before Week 5
 
-- [x] `fetch_aemo.py` run against live AEMO data (35,088 rows — matches
-      exactly 2 years of half-hourly data, leap year included)
-- [x] `load_bom.py` run against live BOM data (731 days). 2 days had an
-      incomplete min/max pair — `temperature` for those is filled from the
-      nearest complete day rather than silently derived from a single
-      reading (see the comment in `load_bom_daily()` if you want to know
-      why that distinction matters)
-- [x] `clean_merge.py` run end-to-end — 35,088 rows merged with no loss,
-      chronological 70/15/15 split written, `split_manifest.json` produced
-- [ ] Identify and log any anomaly windows (missing data, sensor outages)
-      in `EXCLUDED_PERIODS` — none identified yet; revisit during EDA
-- [ ] Sanity-check `split_manifest.json` cutoff dates look right
-- [x] Note the temperature-only (no humidity, daily not half-hourly)
-      weather scope in your report/EDA as a documented deviation from the
-      original proposal, with the reasoning (BOM's free-tier limitations)
-      — see the "BOM weather data" section above, reuse that wording
-- [x] Confirmed `data/processed/` and `data/raw/nemosis_cache/` are *not*
-      in git (see `.gitignore`) but are reproducible by anyone who clones
-      the repo and runs the three scripts in order
+- [ ] Sign up for renewables.ninja and set `RENEWABLES_NINJA_TOKEN`
+- [ ] Run all three fetch scripts against live data
+- [ ] Check the printed irradiance feature column names from
+      `fetch_irradiance.py` match what you expect (exact columns depend on
+      the API's raw-weather response)
+- [ ] Run `clean_merge.py` and confirm the split looks sensible
+- [ ] Identify and log any anomaly windows in `EXCLUDED_PERIODS`
+- [ ] Prepare the Week 5 progress PowerPoint for Zeehan

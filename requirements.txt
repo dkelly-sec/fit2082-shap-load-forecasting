@@ -1,6 +1,7 @@
 pandas>=2.0
 nemosis>=3.4
 holidays>=0.45
+requests>=2.31
 lightgbm>=4.0
 shap>=0.44
 scikit-learn>=1.3

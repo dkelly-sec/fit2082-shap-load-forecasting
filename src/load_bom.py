@@ -4,10 +4,8 @@ Load and combine Bureau of Meteorology daily temperature data.
 BOM's free Climate Data Online download only offers DAILY resolution for
 temperature (no free half-hourly/hourly station archive over a multi-year
 span -- that requires a paid Data Services request). This project uses
-daily minimum and maximum temperature instead, forward-filled across each
-day's half-hourly slots in clean_merge.py. Humidity was not freely
-available for this station either, so it's out of scope for this project
--- worth a line in your report/EDA noting the substitution.
+daily minimum and maximum temperature, broadcast across each day's
+half-hourly demand rows in clean_merge.py.
 
 Expected input
 --------------
@@ -21,10 +19,8 @@ auto-extract it) named like:
     IDCJAC0011_*  = daily minimum temperature
     IDCJAC0010_*  = daily maximum temperature
 
-Place all four folders (min/max x 2024/2025, or however many years you
-downloaded) directly inside data/raw/ -- this script finds them
-automatically by matching the IDCJAC0010_*/IDCJAC0011_* folder name
-pattern, so you don't need to list exact filenames anywhere.
+Place all such folders directly inside data/raw/ -- this script finds them
+automatically by matching the folder name pattern.
 
 Usage
 -----
@@ -130,9 +126,6 @@ def load_bom_daily() -> pd.DataFrame:
     both_present = merged[["temp_min", "temp_max"]].notna().all(axis=1)
     merged["temperature"] = merged[["temp_min", "temp_max"]].mean(axis=1).where(both_present)
 
-    # Fill the resulting isolated daily gaps (missing reading, not a missing
-    # date) from the nearest available day, since a single missing input on
-    # an otherwise-complete day is best treated as a short gap, not dropped.
     n_gap_days = merged["temperature"].isna().sum()
     if n_gap_days:
         merged["temperature"] = merged["temperature"].ffill().bfill()
