@@ -123,11 +123,26 @@ irradiance, both onto 5-minute demand) — synthetic data, no network needed.
 
 ## Before Week 5
 
-- [ ] Sign up for renewables.ninja and set `RENEWABLES_NINJA_TOKEN`
-- [ ] Run all three fetch scripts against live data
-- [ ] Check the printed irradiance feature column names from
-      `fetch_irradiance.py` match what you expect (exact columns depend on
-      the API's raw-weather response)
-- [ ] Run `clean_merge.py` and confirm the split looks sensible
-- [ ] Identify and log any anomaly windows in `EXCLUDED_PERIODS`
+- [x] Sign up for renewables.ninja and set `RENEWABLES_NINJA_TOKEN`
+- [x] Ran all three fetch scripts against live data — AEMO 210,527 rows
+      (native 5-min, 2024–2025), BOM temperature, renewables.ninja
+      irradiance (17,533 hourly rows)
+- [x] Confirmed irradiance feature columns: `electricity`,
+      `irradiance_direct`, `irradiance_diffuse`, `temperature` (this last
+      one is MERRA-2's *modeled* temperature, kept as `irr_temperature` in
+      the merged output — distinct from BOM's real station reading in the
+      `temperature` column, not a duplicate/error)
+- [x] Ran `clean_merge.py` — 210,527 rows merged, chronological split
+      147,368 / 31,579 / 31,580 (~70/15/15)
+- [x] **Known, documented gap:** 155 rows (0.07%) at the very start of the
+      dataset (2024-01-01, before ~11am local time) have no matching
+      irradiance value. This is a UTC/local-time boundary effect, not a
+      real data gap: renewables.ninja's API request starts at
+      `2024-01-01 00:00 UTC`, which is `2024-01-01 11:00` in Melbourne
+      (AEDT, +11:00) — so there's no irradiance data available for local
+      times before that on the very first day, since it would require
+      data from before the requested range began. Left in place rather
+      than dropped; worth a one-line mention in the report's data-cleaning
+      section.
+- [ ] Identify and log any other anomaly windows in `EXCLUDED_PERIODS`
 - [ ] Prepare the Week 5 progress PowerPoint for Zeehan

@@ -162,7 +162,11 @@ def merge_weather_and_irradiance(demand: pd.DataFrame, weather_daily: pd.DataFra
         n_missing_irr = merged[irr_cols[0]].isna().sum()
         if n_missing_irr:
             print(f"  {n_missing_irr} rows have no matching hourly irradiance "
-                  "(hour not in renewables.ninja data) -- extend the date range or drop these rows.")
+                  "(hour not in renewables.ninja data) -- extend the date range or drop these rows. "
+                  "Note: a small number of rows at the very start of the dataset is expected due to "
+                  "the UTC-to-local-time boundary (e.g. 2024-01-01 00:00 UTC = 2024-01-01 11:00 "
+                  "Melbourne time in AEDT, so no irradiance exists for local times before that on "
+                  "the first day). This is documented, not a bug.")
 
     return merged
 
