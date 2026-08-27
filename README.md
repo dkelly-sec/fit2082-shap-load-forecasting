@@ -121,6 +121,56 @@ Cover region-filtering, intervention-duplicate handling, native-resolution
 preservation, and the two-tier broadcast merge (daily temperature, hourly
 irradiance, both onto 5-minute demand) — synthetic data, no network needed.
 
+## Week 5–6: LightGBM training baseline
+
+The training entry point consumes the Week 4 merged dataset directly. It does
+not download data or implement the later SHAP sampling experiment.
+
+```bash
+python scripts/train_model.py \
+  --data data/interim/merged_full.csv \
+  --config configs/training.json \
+  --output artifacts/training
+```
+
+The pipeline:
+
+- sorts and validates the `timestamp` column, then uses the existing 70/15/15
+  chronological split with strict non-overlap assertions;
+- adds calendar fields plus causal demand lags at 288 and 2,016 five-minute
+  intervals (the same time on the previous day/week);
+- compares LightGBM with a previous-day seasonal-naive baseline;
+- selects a small, fixed parameter grid using validation MAE and LightGBM
+  early stopping; the test set is evaluated only after selection;
+- safely reports MAE, RMSE and MAPE using a configurable denominator floor;
+- keeps the train-fitted, validation-selected model for Week 7 TreeSHAP.
+
+Outputs under `artifacts/training/` are:
+
+```text
+model.joblib                 reloadable sklearn-style model
+model.txt                    LightGBM native model
+feature_names.json           exact ordered model columns
+best_params.json             selected parameters, seed and final strategy
+metrics.json                 validation/test model and baseline metrics
+split_metadata.json          exact time ranges and row counts
+tuning_results.json          validation-only search results
+predictions.csv              timestamp, actual, prediction, split, model
+actual_vs_predicted.png      first test-week comparison
+residual_distribution.png    test residual histogram
+```
+
+Run the training-related tests from the repository root:
+
+```bash
+python -m pytest -q tests/test_training.py tests/test_fetch_aemo_native.py tests/test_merge_multi_resolution.py
+```
+
+Generated CSV files are intentionally gitignored. If
+`data/interim/merged_full.csv` is absent, restore or rerun the Week 4 data
+pipeline before formal training. Do not report smoke-test metrics as project
+results.
+
 ## Before Week 5
 
 - [x] Sign up for renewables.ninja and set `RENEWABLES_NINJA_TOKEN`
