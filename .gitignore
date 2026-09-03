@@ -4,6 +4,7 @@
 data/raw/*
 data/interim/*
 data/processed/*
+data/received_processed/
 !data/raw/.gitkeep
 !data/interim/.gitkeep
 !data/processed/.gitkeep

@@ -196,11 +196,38 @@ python -m pytest -q tests/test_training.py tests/test_fetch_aemo_native.py tests
 ```
 
 The training framework and synthetic verification are complete. Formal training
-on the final Week 4 merged dataset is **not** complete in this checkout because
-the CSV is absent. Generated CSV files are intentionally gitignored. If
+was completed after receiving the teammate-produced feature splits and
+re-integrating them as a single origin-time dataset. All precomputed
+`target_*` columns were removed before training; the corrected pipeline rebuilt
+the 24-hour target and purged splits. Generated CSV files are intentionally
+gitignored. If
 `data/interim/merged_full.csv` is absent, restore or rerun the Week 4 data
 pipeline before formal training. Do not report smoke-test metrics as project
 results.
+
+### Formal real-data run
+
+The formal run used 208,223 supplied origin-time rows. After the 2,304
+structural boundary rows and 24 rows with missing required irradiance were
+removed, 205,895 rows remained before purged splitting.
+
+| Split | Model | MAE (MW) | RMSE (MW) | MAPE | n |
+|---|---|---:|---:|---:|---:|
+| Validation | LightGBM | 367.91 | 515.58 | 6.81% | 30,797 |
+| Validation | Seasonal naive | 491.40 | 678.44 | 9.14% | 30,797 |
+| Test | LightGBM | 397.49 | 554.50 | 10.14% | 30,799 |
+| Test | Seasonal naive | 524.05 | 746.44 | 13.38% | 30,799 |
+
+The test MAE is approximately 24.1% lower than the seasonal-naive baseline.
+Selected LightGBM candidate: learning rate 0.03, 63 leaves, and best iteration
+678 (full values are saved in `artifacts/training_real/best_params.json`).
+
+Data-quality qualification: the supplied files already begin after feature
+engineering, so they do not reproduce the raw merge's original 155-row
+UTC/local-time boundary count. They contain 24 missing `irr_electricity` rows.
+The documented 576-row BOM issue appears in `temp_max`; the derived required
+`temperature` column is complete. These distinctions are retained rather than
+claiming that the source-level counts were independently reproduced.
 
 After the horizon and formal model are approved, freeze the dataset, split
 boundaries, feature definitions and order, hyperparameters, seed, and trained
