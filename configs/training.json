@@ -1,6 +1,16 @@
 {
   "timestamp_column": "timestamp",
   "target_column": "demand",
+  "forecast_horizon_intervals": 288,
+  "interval_minutes": 5,
+  "purge_intervals": 288,
+  "weather_feature_timing": "origin",
+  "required_weather_columns": ["temperature", "irr_electricity"],
+  "missing_weather_strategy": "drop",
+  "known_missing_weather_rows": {
+    "temperature": 576,
+    "irr_electricity": 155
+  },
   "train_fraction": 0.70,
   "validation_fraction": 0.15,
   "test_fraction": 0.15,

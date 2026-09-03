@@ -23,8 +23,8 @@ def regression_metrics(actual, prediction, mape_epsilon: float = 1.0) -> dict[st
     }
 
 
-def seasonal_naive(frame: pd.DataFrame, intervals_per_day: int = 288) -> pd.Series:
-    """Predict with the observed demand from the same 5-minute slot yesterday."""
-    if "demand" not in frame:
-        raise ValueError("seasonal_naive requires a demand column.")
-    return frame["demand"].shift(intervals_per_day)
+def seasonal_naive(frame: pd.DataFrame) -> pd.Series:
+    """Predict y_(t+24h) with y_t for rows whose timestamp is origin t."""
+    if "demand_at_origin" not in frame:
+        raise ValueError("seasonal_naive requires a demand_at_origin column.")
+    return frame["demand_at_origin"].copy()
