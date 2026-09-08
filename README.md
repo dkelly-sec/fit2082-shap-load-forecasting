@@ -121,6 +121,119 @@ Cover region-filtering, intervention-duplicate handling, native-resolution
 preservation, and the two-tier broadcast merge (daily temperature, hourly
 irradiance, both onto 5-minute demand) — synthetic data, no network needed.
 
+## Week 5–6: LightGBM training baseline
+
+The training entry point consumes the Week 4 merged dataset directly. It does
+not download data or implement the later SHAP sampling experiment.
+
+```bash
+python scripts/train_model.py \
+  --data data/interim/merged_full.csv \
+  --config configs/training.json \
+  --output artifacts/training
+```
+
+### Forecast-row semantics
+
+The configured horizon is 288 five-minute intervals (24 hours). Every training
+row is timestamped by its **forecast origin** `t`:
+
+- `timestamp` = forecast origin `t`;
+- `target_timestamp` = `t + 24h`;
+- `demand` = target demand `y_(t+24h)`;
+- `demand_at_origin` = `y_t` and is the 24-hour seasonal-naive prediction;
+- `demand_lag_288` = `y_(t-24h)` (origin-relative);
+- `demand_lag_2016` = `y_(t-7d)` (origin-relative).
+
+Consequently, `lag_288` is not described as “yesterday relative to the target”.
+The structural boundary loss is 2,304 rows: 2,016 rows required for the longest
+origin-relative lag plus 288 trailing rows required to construct the future
+target.
+
+The pipeline:
+
+- requires sorted, duplicate-free timestamps and writes `data_quality.json`;
+- uses a 70/15/15 chronological split with a 288-row purge between train and
+  validation and between validation and test;
+- asserts both origin-time ordering and that earlier-split target timestamps
+  end before the next split's origins begin;
+- compares LightGBM with the 24-hour seasonal-naive baseline `y_t`;
+- selects a small, fixed parameter grid using validation MAE and LightGBM
+  early stopping; the test set is evaluated only after selection;
+- safely reports MAE, RMSE and MAPE using a configurable denominator floor;
+- keeps the train-fitted, validation-selected model for Week 7 TreeSHAP.
+
+### Weather availability
+
+The current configuration uses only weather observations attached to the
+forecast-origin row (`weather_feature_timing: origin`). It does **not** treat
+actual observations at `t+24h` as information available at origin. A future
+target-aligned weather experiment must use archived forecasts, or be explicitly
+labelled as a perfect-weather/oracle experiment. Required weather columns and
+the missing-value policy are configured explicitly; the current policy drops
+rows with missing required weather after recording counts in `data_quality.json`.
+
+Outputs under `artifacts/training/` are:
+
+```text
+model.joblib                 reloadable sklearn-style model
+model.txt                    LightGBM native model
+feature_names.json           exact ordered model columns
+best_params.json             selected parameters, seed and final strategy
+metrics.json                 validation/test model and baseline metrics
+data_quality.json            columns, ordering, duplicates, weather gaps, boundary loss
+split_metadata.json          exact time ranges and row counts
+tuning_results.json          validation-only search results
+predictions.csv              timestamp, actual, prediction, split, model
+actual_vs_predicted.png      first test-week comparison
+residual_distribution.png    test residual histogram
+```
+
+Run the training-related tests from the repository root:
+
+```bash
+python -m pytest -q tests/test_training.py tests/test_fetch_aemo_native.py tests/test_merge_multi_resolution.py
+```
+
+The training framework and synthetic verification are complete. Formal training
+was completed after receiving the teammate-produced feature splits and
+re-integrating them as a single origin-time dataset. All precomputed
+`target_*` columns were removed before training; the corrected pipeline rebuilt
+the 24-hour target and purged splits. Generated CSV files are intentionally
+gitignored. If
+`data/interim/merged_full.csv` is absent, restore or rerun the Week 4 data
+pipeline before formal training. Do not report smoke-test metrics as project
+results.
+
+### Formal real-data run
+
+The formal run used 208,223 supplied origin-time rows. After the 2,304
+structural boundary rows and 24 rows with missing required irradiance were
+removed, 205,895 rows remained before purged splitting.
+
+| Split | Model | MAE (MW) | RMSE (MW) | MAPE | n |
+|---|---|---:|---:|---:|---:|
+| Validation | LightGBM | 367.91 | 515.58 | 6.81% | 30,797 |
+| Validation | Seasonal naive | 491.40 | 678.44 | 9.14% | 30,797 |
+| Test | LightGBM | 397.49 | 554.50 | 10.14% | 30,799 |
+| Test | Seasonal naive | 524.05 | 746.44 | 13.38% | 30,799 |
+
+The test MAE is approximately 24.1% lower than the seasonal-naive baseline.
+Selected LightGBM candidate: learning rate 0.03, 63 leaves, and best iteration
+678 (full values are saved in `artifacts/training_real/best_params.json`).
+
+Data-quality qualification: the supplied files already begin after feature
+engineering, so they do not reproduce the raw merge's original 155-row
+UTC/local-time boundary count. They contain 24 missing `irr_electricity` rows.
+The documented 576-row BOM issue appears in `temp_max`; the derived required
+`temperature` column is complete. These distinctions are retained rather than
+claiming that the source-level counts were independently reproduced.
+
+After the horizon and formal model are approved, freeze the dataset, split
+boundaries, feature definitions and order, hyperparameters, seed, and trained
+model. Week 7 TreeSHAP experiments must reuse them; only background and
+evaluation sample selection may change.
+
 ## Before Week 5
 
 - [x] Sign up for renewables.ninja and set `RENEWABLES_NINJA_TOKEN`
