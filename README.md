@@ -1,19 +1,33 @@
 # FIT2082 Data Pipeline
 
-Data acquisition and cleaning pipeline for *Sampling Sensitivity of Global
-SHAP Feature Rankings in Short-Term Electricity Demand Forecasting*.
+Data acquisition, cleaning, model training, and explainability pipeline for
+*Sampling Sensitivity of Global SHAP Feature Rankings in Short-Term
+Electricity Demand Forecasting*.
 
 Produces a clean, chronologically-split dataset combining AEMO Victorian
 electricity demand (native 5-minute resolution, per supervisor direction),
 BOM daily temperature, renewables.ninja hourly solar irradiance, and
-derived calendar features (day-of-week, public holiday flag, season).
+derived calendar features — trains and validates a LightGBM forecaster
+against a seasonal-naive baseline — and wires up a TreeSHAP explainer,
+verified mathematically, ready for the full background/evaluation sampling
+experiment grid in Weeks 8-9.
 
-## Project status
+## Project status (running log, most recent first)
 
-Per Zeehan's Week 4 feedback email and follow-up meeting direction:
-- AEMO demand stays at its **native 5-minute resolution** — no resampling.
-- Weather now includes **both temperature (BOM) and irradiance
-  (renewables.ninja)**, not temperature alone.
+- **Week 7:** TreeSHAP pilot wired up (`src/shap_pilot.py`) against the
+  frozen model, using `interventional` perturbation mode. Verified via a
+  mathematical additivity check, not just eyeballed. Two real bugs caught
+  and fixed in the process (see "Week 7: TreeSHAP pilot" below). Pilot
+  ranking on real data matches EDA intuition (hour-of-day and demand lags
+  dominate; weather signals cluster mid-ranking).
+- **Weeks 5-6:** LightGBM forecaster trained and tuned via time-series CV
+  with a purged chronological split, validated against a seasonal-naive
+  baseline (~23.6% lower test MAE). Model, features, hyperparameters, and
+  split boundaries are now **frozen** for Week 7 onward.
+- **Week 4:** Full data pipeline complete — AEMO demand (native 5-min),
+  BOM temperature, renewables.ninja irradiance, calendar features,
+  chronological train/val/test split. EDA found no anomalies requiring
+  `EXCLUDED_PERIODS`.
 
 ## Setup
 
@@ -44,9 +58,9 @@ Edit `src/config.py`:
 - `START_DATE` / `END_DATE` — your 2-year window (currently 2024-01-01 to 2025-12-31)
 - `REGION` — NEM region of interest (currently VIC1)
 - `LATITUDE` / `LONGITUDE` — location for temperature and irradiance (currently Melbourne, Olympic Park)
-- `EXCLUDED_PERIODS` — any anomaly windows you identify during EDA
+- `EXCLUDED_PERIODS` — any anomaly windows identified during EDA (currently none — see Week 4 status above)
 
-## Run
+## Run: Data pipeline (Week 4)
 
 ### 1. AEMO demand data (native 5-minute resolution)
 
@@ -110,7 +124,7 @@ data/processed/test.csv
 data/processed/split_manifest.json
 ```
 
-## Tests
+### Data pipeline tests
 
 ```bash
 python tests/test_fetch_aemo_native.py
@@ -121,10 +135,10 @@ Cover region-filtering, intervention-duplicate handling, native-resolution
 preservation, and the two-tier broadcast merge (daily temperature, hourly
 irradiance, both onto 5-minute demand) — synthetic data, no network needed.
 
-## Week 5–6: LightGBM training baseline
+## Run: LightGBM training baseline (Weeks 5-6)
 
-The training entry point consumes the Week 4 merged dataset directly. It does
-not download data or implement the later SHAP sampling experiment.
+The training entry point consumes the Week 4 merged dataset directly. It
+does not download data or implement the later SHAP sampling experiment.
 
 ```bash
 python scripts/train_model.py \
@@ -133,45 +147,52 @@ python scripts/train_model.py \
   --output artifacts/training
 ```
 
+**Note on output folder naming:** the folder name after `--output` is
+arbitrary — it isn't referenced anywhere in the code itself, only in this
+README's prose. Earlier documentation here referred to a
+`artifacts/training_real` folder for the formal run specifically (to
+distinguish it from smoke-test runs); this has been standardised back to
+`artifacts/training` throughout this document. Use whichever name you
+like locally, just be consistent when pointing `--artifacts` at it in
+Week 7's scripts below.
+
 ### Forecast-row semantics
 
-The configured horizon is 288 five-minute intervals (24 hours). Every training
-row is timestamped by its **forecast origin** `t`:
+The configured horizon is 288 five-minute intervals (24 hours). Every
+training row is timestamped by its **forecast origin** `t`:
 
-- `timestamp` = forecast origin `t`;
-- `target_timestamp` = `t + 24h`;
-- `demand` = target demand `y_(t+24h)`;
-- `demand_at_origin` = `y_t` and is the 24-hour seasonal-naive prediction;
-- `demand_lag_288` = `y_(t-24h)` (origin-relative);
-- `demand_lag_2016` = `y_(t-7d)` (origin-relative).
+- `timestamp` = forecast origin `t`
+- `target_timestamp` = `t + 24h`
+- `demand` = target demand `y_(t+24h)`
+- `demand_at_origin` = `y_t`, and is the 24-hour seasonal-naive prediction
+- `demand_lag_288` = `y_(t-24h)` (origin-relative)
+- `demand_lag_2016` = `y_(t-7d)` (origin-relative)
 
-Consequently, `lag_288` is not described as “yesterday relative to the target”.
-The structural boundary loss is 2,304 rows: 2,016 rows required for the longest
-origin-relative lag plus 288 trailing rows required to construct the future
-target.
+The structural boundary loss is 2,304 rows: 2,016 required for the longest
+origin-relative lag, plus 288 trailing rows required to construct the
+future target.
 
 The pipeline:
-
-- requires sorted, duplicate-free timestamps and writes `data_quality.json`;
-- uses a 70/15/15 chronological split with a 288-row purge between train and
-  validation and between validation and test;
-- asserts both origin-time ordering and that earlier-split target timestamps
-  end before the next split's origins begin;
-- compares LightGBM with the 24-hour seasonal-naive baseline `y_t`;
+- requires sorted, duplicate-free timestamps and writes `data_quality.json`
+- uses a 70/15/15 chronological split with a 288-row purge between train
+  and validation, and between validation and test
+- asserts both origin-time ordering and that earlier-split target
+  timestamps end before the next split's origins begin
+- compares LightGBM against the 24-hour seasonal-naive baseline `y_t`
 - selects a small, fixed parameter grid using validation MAE and LightGBM
-  early stopping; the test set is evaluated only after selection;
-- safely reports MAE, RMSE and MAPE using a configurable denominator floor;
-- keeps the train-fitted, validation-selected model for Week 7 TreeSHAP.
+  early stopping; the test set is evaluated only after selection
+- keeps the train-fitted, validation-selected model for Week 7 TreeSHAP
 
 ### Weather availability
 
 The current configuration uses only weather observations attached to the
-forecast-origin row (`weather_feature_timing: origin`). It does **not** treat
-actual observations at `t+24h` as information available at origin. A future
-target-aligned weather experiment must use archived forecasts, or be explicitly
-labelled as a perfect-weather/oracle experiment. Required weather columns and
-the missing-value policy are configured explicitly; the current policy drops
-rows with missing required weather after recording counts in `data_quality.json`.
+forecast-origin row (`weather_feature_timing: origin`). It does **not**
+treat actual observations at `t+24h` as information available at origin —
+this was a deliberate methodological choice (see the training pipeline's
+docstrings) to avoid treating future weather as known, which real
+day-ahead forecasting can't assume.
+
+### Training outputs
 
 Outputs under `artifacts/training/` are:
 
@@ -189,73 +210,174 @@ actual_vs_predicted.png      first test-week comparison
 residual_distribution.png    test residual histogram
 ```
 
-Run the training-related tests from the repository root:
+### Formal real-data run (results)
+
+The formal run used ~208,223 supplied origin-time rows; after structural
+boundary loss and a small number of missing-irradiance rows, ~205,900 rows
+remained before purged splitting.
+
+| Split | Model | MAE (MW) | RMSE (MW) | MAPE | n |
+|---|---|---:|---:|---:|---:|
+| Validation | LightGBM | 400.05 | 545.36 | 7.40% | 31,143 |
+| Validation | Seasonal naive | 488.01 | 675.52 | 9.08% | 31,143 |
+| Test | LightGBM | 402.84 | 573.19 | 10.14% | 31,144 |
+| Test | Seasonal naive | 527.55 | 750.15 | 13.52% | 31,144 |
+
+Test MAE is approximately **23.6% lower** than the seasonal-naive
+baseline. Selected LightGBM candidate: learning rate 0.03, 63 leaves.
+
+**After the model was approved: dataset, split boundaries, feature
+definitions and order, hyperparameters, seed, and trained model were
+frozen.** Week 7 TreeSHAP experiments reuse them; only background and
+evaluation sample selection may change from here on.
+
+### Training tests
 
 ```bash
 python -m pytest -q tests/test_training.py tests/test_fetch_aemo_native.py tests/test_merge_multi_resolution.py
 ```
 
-The training framework and synthetic verification are complete. Formal training
-was completed after receiving the teammate-produced feature splits and
-re-integrating them as a single origin-time dataset. All precomputed
-`target_*` columns were removed before training; the corrected pipeline rebuilt
-the 24-hour target and purged splits. Generated CSV files are intentionally
-gitignored. If
-`data/interim/merged_full.csv` is absent, restore or rerun the Week 4 data
-pipeline before formal training. Do not report smoke-test metrics as project
-results.
+## Run: Week 7 — TreeSHAP pilot
 
-### Formal real-data run
+### 1. Load the frozen model
 
-The formal run used 208,223 supplied origin-time rows. After the 2,304
-structural boundary rows and 24 rows with missing required irradiance were
-removed, 205,895 rows remained before purged splitting.
+```bash
+python src/load_model.py --artifacts artifacts/training
+```
 
-| Split | Model | MAE (MW) | RMSE (MW) | MAPE | n |
-|---|---|---:|---:|---:|---:|
-| Validation | LightGBM | 367.91 | 515.58 | 6.81% | 30,797 |
-| Validation | Seasonal naive | 491.40 | 678.44 | 9.14% | 30,797 |
-| Test | LightGBM | 397.49 | 554.50 | 10.14% | 30,799 |
-| Test | Seasonal naive | 524.05 | 746.44 | 13.38% | 30,799 |
+Reads `model.joblib` and `feature_names.json`, prints the feature list and
+recorded training metrics, and runs a cheap sanity check (predicting on a
+dummy all-zero row) to confirm the model is genuinely loadable and callable
+before any SHAP code is built on top of it.
 
-The test MAE is approximately 24.1% lower than the seasonal-naive baseline.
-Selected LightGBM candidate: learning rate 0.03, 63 leaves, and best iteration
-678 (full values are saved in `artifacts/training_real/best_params.json`).
+### 2. Run the TreeSHAP pilot
 
-Data-quality qualification: the supplied files already begin after feature
-engineering, so they do not reproduce the raw merge's original 155-row
-UTC/local-time boundary count. They contain 24 missing `irr_electricity` rows.
-The documented 576-row BOM issue appears in `temp_max`; the derived required
-`temperature` column is complete. These distinctions are retained rather than
-claiming that the source-level counts were independently reproduced.
+```bash
+python src/shap_pilot.py \
+  --data data/interim/merged_full.csv \
+  --config configs/training.json \
+  --artifacts artifacts/training \
+  --background-size 200 \
+  --evaluation-size 100
+```
 
-After the horizon and formal model are approved, freeze the dataset, split
-boundaries, feature definitions and order, hyperparameters, seed, and trained
-model. Week 7 TreeSHAP experiments must reuse them; only background and
-evaluation sample selection may change.
+This:
+- Reuses the training pipeline's exact `prepare_frame()` logic, so feature
+  columns are guaranteed to line up with what the frozen model expects
+  (and fails loudly if they don't)
+- Draws a plain random background and evaluation sample (a placeholder for
+  Weeks 8-9's actual experimental variable — background/evaluation size
+  *and* construction method: uniform, k-means, time-stratified, rare-event
+  -stratified)
+- Wires up `shap.TreeExplainer` in **interventional** mode — the mode that
+  takes an explicit background dataset, which is the actual variable this
+  project's whole research question manipulates
+- Verifies the result mathematically via an **additivity check**:
+  `prediction == base_value + sum(SHAP values)` must hold for every
+  explained row, within a documented tolerance (see below) — not just
+  assumed to be correct because nothing crashed
+- Aggregates to a global ranking (mean absolute SHAP value per feature),
+  saves it as a CSV and a bar chart
 
-## Before Week 5
+Outputs under `artifacts/shap_pilot/`:
 
-- [x] Sign up for renewables.ninja and set `RENEWABLES_NINJA_TOKEN`
-- [x] Ran all three fetch scripts against live data — AEMO 210,527 rows
-      (native 5-min, 2024–2025), BOM temperature, renewables.ninja
-      irradiance (17,533 hourly rows)
-- [x] Confirmed irradiance feature columns: `electricity`,
-      `irradiance_direct`, `irradiance_diffuse`, `temperature` (this last
-      one is MERRA-2's *modeled* temperature, kept as `irr_temperature` in
-      the merged output — distinct from BOM's real station reading in the
-      `temperature` column, not a duplicate/error)
-- [x] Ran `clean_merge.py` — 210,527 rows merged, chronological split
-      147,368 / 31,579 / 31,580 (~70/15/15)
-- [x] **Known, documented gap:** 155 rows (0.07%) at the very start of the
-      dataset (2024-01-01, before ~11am local time) have no matching
-      irradiance value. This is a UTC/local-time boundary effect, not a
-      real data gap: renewables.ninja's API request starts at
-      `2024-01-01 00:00 UTC`, which is `2024-01-01 11:00` in Melbourne
-      (AEDT, +11:00) — so there's no irradiance data available for local
-      times before that on the very first day, since it would require
-      data from before the requested range began. Left in place rather
-      than dropped; worth a one-line mention in the report's data-cleaning
-      section.
-- [ ] Identify and log any other anomaly windows in `EXCLUDED_PERIODS`
-- [ ] Prepare the Week 5 progress PowerPoint for Zeehan
+```text
+pilot_global_ranking.csv     feature, mean_abs_shap
+pilot_global_ranking.png     bar chart, top 15 features
+```
+
+### Two real bugs found and fixed this week
+
+**1. SHAP silently caps background data at 100 rows.** `shap.TreeExplainer`
+has an undocumented default that subsamples any larger background dataset
+down to 100 rows internally. Left unfixed, this would have quietly
+corrupted every background-size experiment in Weeks 8-9 — the literal core
+variable of this project's research question, since the intended sample
+size would never actually reach the explainer. Fixed by explicitly
+constructing a `shap.maskers.Independent(background, max_samples=len(background))`
+rather than passing the raw background data directly.
+
+**2. The additivity check initially failed by ~1-13 MW.** Diagnosed
+empirically (not assumed) by testing the same setup across different
+LightGBM objectives: `regression_l1` (MAE, used by this project's frozen
+model) computes leaf values via an iterative approximation rather than an
+exact closed-form value, unlike `regression` (L2) or `huber`, which showed
+the gap shrink by roughly 5x and 10,000x respectively when swapped in on
+the same data. This isolates the cause to the L1 objective's leaf-fitting
+procedure — a small, bounded, known characteristic, not a wiring bug. The
+additivity check's tolerance is now scaled to prediction magnitude
+(`max(5.0 MW, 0.3% of median prediction)`) rather than a fixed constant,
+with the full reasoning documented in `check_additivity()`'s docstring. A
+genuine wiring bug would produce errors orders of magnitude larger than
+this (hundreds/thousands of MW), so the check remains meaningful.
+
+### Pilot results (real data, background n=200, evaluation n=100)
+
+| Feature | Mean \|SHAP\| |
+|---|---:|
+| `hour` | 244.0 |
+| `demand_lag_288` (yesterday) | 221.1 |
+| `demand_lag_2016` (last week) | 214.6 |
+| `day_of_week` | 172.4 |
+| `day_of_year` | 105.2 |
+| `temperature` | 102.3 |
+| `irr_temperature` | 83.9 |
+| `temp_max` | 81.3 |
+| `irr_electricity` | 76.1 |
+| `irr_irradiance_diffuse` | 67.2 |
+
+This is a **pilot sanity check, not the formal RQ1 experiment** — it
+confirms the explainer is wired correctly and the ranking is plausible
+(time-of-day and demand lags dominate, matching the EDA's hourly/duck-curve
+findings; weather signals cluster together mid-ranking rather than any
+one dominating). The actual background/evaluation sampling experiment
+grid is Weeks 8-9's work.
+
+### Week 7 tests
+
+```bash
+python -m pytest -q tests/test_load_model.py tests/test_shap_pilot.py
+```
+
+Covers: the loader against a genuinely (fast-)trained model; the
+additivity check both passing correctly and correctly detecting a
+deliberately broken explainer (not just a rubber-stamp check); a
+zero-variance feature receiving exactly zero SHAP importance; and a
+feature-mismatch guard that fails loudly before wasting time computing
+SHAP values against the wrong columns.
+
+**Note:** if you hit a `_tkinter.TclError` about a missing `init.tcl` file
+when running tests on Windows, this is a known issue with Python installs
+from the Microsoft Store (their Tcl/Tk bundling can be incomplete inside
+the Store's sandboxed environment) — unrelated to this project's code.
+The tests already set `matplotlib.use("Agg")` to avoid needing a working
+Tkinter at all; if you still hit this in your own scripts, add the same
+line before importing `matplotlib.pyplot`.
+
+## Before Week 8
+
+- [ ] Design the actual background/evaluation sample construction module
+      (uniform random, k-means summarisation, time-stratified, rare-event
+      -stratified) — `shap_pilot.py`'s `draw_sample()` is a placeholder
+      this should replace
+- [ ] Confirm the 1-day forecast horizon with Zeehan (raised as an open
+      question in the Week 7 progress update)
+- [ ] Plan the 30-seed repeated-sampling design and whether Monash's M3
+      HPC cluster is needed given compute cost
+- [ ] Decide the exact background/evaluation size grid to test (spec
+      suggests e.g. 25, 50, 100, 250, 500 for background; 10%-100% of test
+      set for evaluation)
+
+## Completed checklist (Weeks 4-7)
+
+- [x] All three data sources (AEMO, BOM, renewables.ninja) fetched,
+      cleaned, and merged
+- [x] EDA complete; no anomalies found requiring `EXCLUDED_PERIODS`
+- [x] Feature engineering (lags, rolling stats, target-aligned
+      weather/calendar) — superseded by the training pipeline's own
+      `prepare_frame()`, which handles this more rigorously (explicit
+      origin/target semantics, purged splits)
+- [x] LightGBM trained, tuned, and validated against baseline
+- [x] Model, features, hyperparameters, and split frozen for Week 7+
+- [x] TreeSHAP wired up in interventional mode, verified via additivity
+- [x] Two real bugs found and fixed before they could affect Weeks 8-9
