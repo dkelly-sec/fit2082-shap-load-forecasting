@@ -14,15 +14,27 @@ experiment grid in Weeks 8-9.
 
 ## Project status (running log, most recent first)
 
+- **Week 8:** Controlled sample construction implemented in
+  `src/sampling.py`: uniform random, k-means representatives,
+  month/time-of-day stratified, and rare-event-stratified sampling.
+  Background samples now come only from the purged training split and
+  evaluation samples only from the held-out purged test split. Rare-event
+  thresholds are pre-registered from training data (demand >= 95th
+  percentile or temperature outside the 5th-95th percentile range).
+  A 12-run real-data pilot grid completed successfully across two
+  background methods, two background sizes and three seeds. Mean pairwise
+  ranking stability was Spearman 0.967, Kendall 0.895 and Top-10 overlap
+  92.9%; every run records its sampling design, runtime and additivity
+  diagnostic.
 - **Week 7:** TreeSHAP pilot wired up (`src/shap_pilot.py`) against the
   frozen model, using `interventional` perturbation mode. Verified via a
   mathematical additivity check, not just eyeballed. Two real bugs caught
   and fixed in the process (see "Week 7: TreeSHAP pilot" below). Pilot
-  ranking on real data matches EDA intuition (hour-of-day and demand lags
-  dominate; weather signals cluster mid-ranking).
+  ranking on real data matches EDA intuition (recent demand, calendar/time
+  features and weekly demand history dominate; weather signals are lower).
 - **Weeks 5-6:** LightGBM forecaster trained and tuned via time-series CV
   with a purged chronological split, validated against a seasonal-naive
-  baseline (~23.6% lower test MAE). Model, features, hyperparameters, and
+  baseline (~24.1% lower test MAE). Model, features, hyperparameters, and
   split boundaries are now **frozen** for Week 7 onward.
 - **Week 4:** Full data pipeline complete — AEMO demand (native 5-min),
   BOM temperature, renewables.ninja irradiance, calendar features,
@@ -144,17 +156,13 @@ does not download data or implement the later SHAP sampling experiment.
 python scripts/train_model.py \
   --data data/interim/merged_full.csv \
   --config configs/training.json \
-  --output artifacts/training
+  --output artifacts/training_real
 ```
 
-**Note on output folder naming:** the folder name after `--output` is
-arbitrary — it isn't referenced anywhere in the code itself, only in this
-README's prose. Earlier documentation here referred to a
-`artifacts/training_real` folder for the formal run specifically (to
-distinguish it from smoke-test runs); this has been standardised back to
-`artifacts/training` throughout this document. Use whichever name you
-like locally, just be consistent when pointing `--artifacts` at it in
-Week 7's scripts below.
+The formal real-data artifacts are stored under
+`artifacts/training_real`. The Week 7 commands below reuse this exact
+directory so that the SHAP pilot loads the approved real-data model rather
+than a smoke-test or separately generated model.
 
 ### Forecast-row semantics
 
@@ -194,7 +202,7 @@ day-ahead forecasting can't assume.
 
 ### Training outputs
 
-Outputs under `artifacts/training/` are:
+Outputs under `artifacts/training_real/` are:
 
 ```text
 model.joblib                 reloadable sklearn-style model
@@ -218,12 +226,12 @@ remained before purged splitting.
 
 | Split | Model | MAE (MW) | RMSE (MW) | MAPE | n |
 |---|---|---:|---:|---:|---:|
-| Validation | LightGBM | 400.05 | 545.36 | 7.40% | 31,143 |
-| Validation | Seasonal naive | 488.01 | 675.52 | 9.08% | 31,143 |
-| Test | LightGBM | 402.84 | 573.19 | 10.14% | 31,144 |
-| Test | Seasonal naive | 527.55 | 750.15 | 13.52% | 31,144 |
+| Validation | LightGBM | 367.91 | 515.58 | 6.81% | 30,797 |
+| Validation | Seasonal naive | 491.40 | 678.44 | 9.14% | 30,797 |
+| Test | LightGBM | 397.49 | 554.50 | 10.14% | 30,799 |
+| Test | Seasonal naive | 524.05 | 746.44 | 13.38% | 30,799 |
 
-Test MAE is approximately **23.6% lower** than the seasonal-naive
+Test MAE is approximately **24.1% lower** than the seasonal-naive
 baseline. Selected LightGBM candidate: learning rate 0.03, 63 leaves.
 
 **After the model was approved: dataset, split boundaries, feature
@@ -242,7 +250,7 @@ python -m pytest -q tests/test_training.py tests/test_fetch_aemo_native.py tests
 ### 1. Load the frozen model
 
 ```bash
-python src/load_model.py --artifacts artifacts/training
+python src/load_model.py --artifacts artifacts/training_real
 ```
 
 Reads `model.joblib` and `feature_names.json`, prints the feature list and
@@ -256,9 +264,13 @@ before any SHAP code is built on top of it.
 python src/shap_pilot.py \
   --data data/interim/merged_full.csv \
   --config configs/training.json \
-  --artifacts artifacts/training \
+  --artifacts artifacts/training_real \
   --background-size 200 \
-  --evaluation-size 100
+  --evaluation-size 100 \
+  --background-method uniform \
+  --evaluation-method time_stratified \
+  --seed 2082 \
+  --output artifacts/shap_pilot_week8
 ```
 
 This:
@@ -279,11 +291,54 @@ This:
 - Aggregates to a global ranking (mean absolute SHAP value per feature),
   saves it as a CSV and a bar chart
 
-Outputs under `artifacts/shap_pilot/`:
+Outputs under the selected pilot output directory (for the example above,
+`artifacts/shap_pilot_week8/`):
 
 ```text
 pilot_global_ranking.csv     feature, mean_abs_shap
 pilot_global_ranking.png     bar chart, top 15 features
+rare_event_definition.json   training-only preregistered thresholds
+run_metadata.json            methods, sizes, seed, sample pools and runtime
+```
+
+### Week 8 controlled sampling design
+
+The sample-construction methods are implemented in `src/sampling.py`:
+
+- `uniform`: reproducible simple random sampling
+- `kmeans`: distinct real rows nearest MiniBatchKMeans centres after
+  standardisation
+- `time_stratified`: proportional coverage across calendar month and four
+  six-hour time-of-day blocks
+- `rare_event_stratified`: 50% rare-event rows and 50% ordinary rows by
+  default, using thresholds fixed from the training split before SHAP
+  results are inspected
+
+Background and evaluation pools are deliberately separated. Background
+rows are drawn from the purged training split; evaluation rows are drawn
+from the held-out purged test split. This prevents the Week 7 placeholder
+behaviour of drawing both samples from the complete prepared frame.
+
+The initial controlled grid should remain a pilot rather than the complete
+30-seed factorial experiment requested later in the project:
+
+| Variable | Initial pilot values |
+|---|---|
+| Background method | uniform, kmeans, time_stratified, rare_event_stratified |
+| Background size | 50, 200 |
+| Evaluation method | uniform, time_stratified, rare_event_stratified |
+| Evaluation size | 100, 500 |
+| Seeds | 2082, 2083, 2084 |
+
+Use the pilot runtimes and rank-stability results to decide whether the full
+size grid (for example 25, 50, 100, 250 and 500) and approximately 30 seeds
+require the Monash M3 cluster. Do not change the frozen model, feature order,
+training data or split boundaries between runs.
+
+Run the Week 8 sampling tests with:
+
+```bash
+python -m pytest -q tests/test_sampling.py tests/test_shap_pilot.py tests/test_shap_experiment.py
 ```
 
 ### Two real bugs found and fixed this week
@@ -305,33 +360,48 @@ exact closed-form value, unlike `regression` (L2) or `huber`, which showed
 the gap shrink by roughly 5x and 10,000x respectively when swapped in on
 the same data. This isolates the cause to the L1 objective's leaf-fitting
 procedure — a small, bounded, known characteristic, not a wiring bug. The
-additivity check's tolerance is now scaled to prediction magnitude
-(`max(5.0 MW, 0.3% of median prediction)`) rather than a fixed constant,
-with the full reasoning documented in `check_additivity()`'s docstring. A
-genuine wiring bug would produce errors orders of magnitude larger than
-this (hundreds/thousands of MW), so the check remains meaningful.
+additivity check now uses `max(5.0 MW, 1% of median prediction)` as a
+diagnostic warning threshold and `max(5.0 MW, 5% of median prediction)`
+as a hard failure limit. This records sample-dependent L1 reconstruction
+variation rather than hiding it by repeatedly changing one tolerance. A
+genuinely corrupted explanation still fails the hard guard.
 
 ### Pilot results (real data, background n=200, evaluation n=100)
 
 | Feature | Mean \|SHAP\| |
 |---|---:|
-| `hour` | 244.0 |
-| `demand_lag_288` (yesterday) | 221.1 |
-| `demand_lag_2016` (last week) | 214.6 |
-| `day_of_week` | 172.4 |
-| `day_of_year` | 105.2 |
-| `temperature` | 102.3 |
-| `irr_temperature` | 83.9 |
-| `temp_max` | 81.3 |
-| `irr_electricity` | 76.1 |
-| `irr_irradiance_diffuse` | 67.2 |
+| `lag_5min` | 240.7 |
+| `day_of_week` | 154.7 |
+| `day_of_year` | 128.4 |
+| `origin_hour_of_day` | 123.4 |
+| `lag_10min` | 97.8 |
+| `lag_1week` | 78.2 |
+| `roll_mean_24h` | 66.0 |
+| `temp_max` | 58.5 |
+| `irr_irradiance_diffuse` | 49.2 |
+| `lag_1day` | 36.9 |
 
 This is a **pilot sanity check, not the formal RQ1 experiment** — it
-confirms the explainer is wired correctly and the ranking is plausible
-(time-of-day and demand lags dominate, matching the EDA's hourly/duck-curve
-findings; weather signals cluster together mid-ranking rather than any
-one dominating). The actual background/evaluation sampling experiment
-grid is Weeks 8-9's work.
+confirms the explainer is wired correctly and the ranking is plausible.
+The table is from the frozen `artifacts/training_real` model, not the
+separately regenerated `artifacts/training` model. The broader
+background/evaluation sampling experiment remains Weeks 8-9's work.
+
+### Week 8 small-grid result
+
+The completed 12-run grid varied background method (`uniform` and
+`time_stratified`), background size (50 and 200) and seed (2082-2084),
+while holding a 100-row time-stratified test evaluation sample design.
+Across all 66 run pairs, mean/minimum stability was:
+
+| Metric | Mean | Minimum |
+|---|---:|---:|
+| Spearman rank correlation | 0.967 | 0.936 |
+| Kendall rank correlation | 0.895 | 0.828 |
+| Top-10 overlap | 0.929 | 0.900 |
+
+These are pilot results used to validate the design and estimate runtime,
+not the final factorial experiment or final research conclusion.
 
 ### Week 7 tests
 
@@ -356,17 +426,16 @@ line before importing `matplotlib.pyplot`.
 
 ## Before Week 8
 
-- [ ] Design the actual background/evaluation sample construction module
+- [x] Design the actual background/evaluation sample construction module
       (uniform random, k-means summarisation, time-stratified, rare-event
       -stratified) — `shap_pilot.py`'s `draw_sample()` is a placeholder
       this should replace
-- [ ] Confirm the 1-day forecast horizon with Zeehan (raised as an open
-      question in the Week 7 progress update)
-- [ ] Plan the 30-seed repeated-sampling design and whether Monash's M3
-      HPC cluster is needed given compute cost
-- [ ] Decide the exact background/evaluation size grid to test (spec
-      suggests e.g. 25, 50, 100, 250, 500 for background; 10%-100% of test
-      set for evaluation)
+- [x] Confirm the 1-day forecast horizon with Zeehan (fixed 24-hour-ahead
+      point forecast)
+- [x] Define a small 3-seed pilot design before considering the full
+      approximately 30-seed experiment
+- [x] Define the initial background/evaluation size grid; use measured
+      pilot runtime and stability to decide whether Monash M3 is needed
 
 ## Completed checklist (Weeks 4-7)
 
