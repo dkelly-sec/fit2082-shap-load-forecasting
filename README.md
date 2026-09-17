@@ -16,13 +16,15 @@ experiment grid in Weeks 8-9.
 
 - **Week 7:** TreeSHAP pilot wired up (`src/shap_pilot.py`) against the
   frozen model, using `interventional` perturbation mode. Verified via a
-  mathematical additivity check, not just eyeballed. Two real bugs caught
-  and fixed in the process (see "Week 7: TreeSHAP pilot" below). Pilot
-  ranking on real data matches EDA intuition (hour-of-day and demand lags
-  dominate; weather signals cluster mid-ranking).
+  mathematical additivity check, not just eyeballed. Three real issues
+  caught and fixed in the process (two wiring bugs, plus a frozen-model
+  provenance mismatch — see "Week 7: TreeSHAP pilot" below). Pilot ranking
+  on the correct, verified frozen model matches EDA intuition (short-term
+  demand momentum and day-of-week dominate; weather signals contribute at
+  a lower but non-trivial level).
 - **Weeks 5-6:** LightGBM forecaster trained and tuned via time-series CV
   with a purged chronological split, validated against a seasonal-naive
-  baseline (~23.6% lower test MAE). Model, features, hyperparameters, and
+  baseline (~24.1% lower test MAE). Model, features, hyperparameters, and
   split boundaries are now **frozen** for Week 7 onward.
 - **Week 4:** Full data pipeline complete — AEMO demand (native 5-min),
   BOM temperature, renewables.ninja irradiance, calendar features,
@@ -147,14 +149,14 @@ python scripts/train_model.py \
   --output artifacts/training
 ```
 
-**Note on output folder naming:** the folder name after `--output` is
-arbitrary — it isn't referenced anywhere in the code itself, only in this
-README's prose. Earlier documentation here referred to a
-`artifacts/training_real` folder for the formal run specifically (to
-distinguish it from smoke-test runs); this has been standardised back to
-`artifacts/training` throughout this document. Use whichever name you
-like locally, just be consistent when pointing `--artifacts` at it in
-Week 7's scripts below.
+**Note on output folder naming:** `artifacts/training_real` is the
+authoritative, frozen model referenced throughout this document (Test
+LightGBM MAE 397.49 MW, ~24.1% improvement over baseline). An earlier,
+independently-regenerated model briefly existed under `artifacts/training`
+during Week 7 — see "Frozen-model provenance mismatch" below for what
+happened and how it was resolved. `artifacts/training` should not be
+treated as authoritative; use `artifacts/training_real` for all Week 7+
+work.
 
 ### Forecast-row semantics
 
@@ -242,7 +244,7 @@ python -m pytest -q tests/test_training.py tests/test_fetch_aemo_native.py tests
 ### 1. Load the frozen model
 
 ```bash
-python src/load_model.py --artifacts artifacts/training
+python src/load_model.py --artifacts artifacts/training_real
 ```
 
 Reads `model.joblib` and `feature_names.json`, prints the feature list and
@@ -254,12 +256,21 @@ before any SHAP code is built on top of it.
 
 ```bash
 python src/shap_pilot.py \
-  --data data/interim/merged_full.csv \
+  --data data/interim/merged_full_frozen.csv \
   --config configs/training.json \
-  --artifacts artifacts/training \
+  --artifacts artifacts/training_real \
   --background-size 200 \
   --evaluation-size 100
 ```
+
+**Important:** use `merged_full_frozen.csv`, not `merged_full.csv`. These
+are two different files with two different sets of columns — see "Frozen-
+model provenance mismatch" below for exactly why, and never confuse the
+two going forward. `merged_full_frozen.csv` is the exact input file the
+`training_real` model was trained on (26 feature columns); a freshly
+regenerated `merged_full.csv` from `clean_merge.py` alone only has 16,
+since it skips the legacy `feature_engineering.py` step that produced the
+other 10.
 
 This:
 - Reuses the training pipeline's exact `prepare_frame()` logic, so feature
@@ -311,27 +322,78 @@ with the full reasoning documented in `check_additivity()`'s docstring. A
 genuine wiring bug would produce errors orders of magnitude larger than
 this (hundreds/thousands of MW), so the check remains meaningful.
 
-### Pilot results (real data, background n=200, evaluation n=100)
+### Frozen-model provenance mismatch (found and resolved)
+
+Partway through Week 7, a third issue surfaced — distinct from the two
+wiring bugs above, and arguably more important to document clearly since
+it's a reproducibility issue, not a code bug.
+
+`artifacts/` is gitignored (correctly — it's large, regenerable output),
+which meant only training *code* was ever shared via GitHub between team
+members, never the actual trained `model.joblib`. When the Week 7 pilot
+was first built, a model was regenerated locally by running
+`scripts/train_model.py` directly against a freshly-generated
+`merged_full.csv`. This produced a **different model** than the one
+actually used for the Week 6 presentation's reported results (397.49 MW
+test MAE), without that being obvious at first — both models used the
+same code, the same config, and the same random seed, and produced
+metrics close enough (402.84 vs 397.49 MW) to plausibly look like ordinary
+run-to-run noise.
+
+The actual cause was a genuinely different, larger feature set: the
+formal `training_real` model has **26 features**, not 16. The extra 10 —
+`lag_5min`, `lag_10min`, `lag_15min`, `lag_1day`, `lag_1week`,
+`roll_mean_1h`, `roll_std_1h`, `roll_mean_24h`, `roll_std_24h`,
+`origin_hour_of_day` — come from an earlier, Week 5 feature-engineering
+script (`src/feature_engineering.py`, now superseded by
+`training.py`'s own `prepare_frame()`), whose output survived
+`scripts/integrate_processed_features.py`'s target-column stripping (it
+only removes `target_*`-prefixed columns, not these) and ended up folded
+into the formal training run. A freshly regenerated `merged_full.csv`
+skips that legacy script entirely, so those 10 columns never exist in it.
+
+**This was caught, not guessed:** comparing `feature_names.json` from both
+models directly showed the exact column-set difference, and running the
+SHAP pilot against the mismatched pair triggered the deliberate
+feature-mismatch guard in `run_pilot()` — exactly the failure mode that
+guard exists to catch.
+
+**Resolution:** the team member who ran the formal training shared the
+exact input CSV used (`data/interim/merged_full_frozen.csv` in this repo —
+208,223 rows, 23 source columns, confirmed to reproduce the documented
+26-feature set exactly) alongside the four artifact files
+(`model.joblib`, `feature_names.json`, `best_params.json`,
+`metrics.json`). Re-running the pilot against this exact pairing confirmed
+a clean feature-set match (26/26) and a passing additivity check.
+
+**Lesson for the team:** a frozen model is only meaningfully frozen if its
+*exact* input data is also pinned and shared, not just its training code —
+identical code with two different (but similarly-shaped) input files can
+silently produce two different models with deceptively similar metrics.
+
+### Pilot results (correct frozen model, background n=200, evaluation n=100)
 
 | Feature | Mean \|SHAP\| |
 |---|---:|
-| `hour` | 244.0 |
-| `demand_lag_288` (yesterday) | 221.1 |
-| `demand_lag_2016` (last week) | 214.6 |
-| `day_of_week` | 172.4 |
-| `day_of_year` | 105.2 |
-| `temperature` | 102.3 |
-| `irr_temperature` | 83.9 |
-| `temp_max` | 81.3 |
-| `irr_electricity` | 76.1 |
-| `irr_irradiance_diffuse` | 67.2 |
+| `lag_5min` (5 min ago) | 296.2 |
+| `day_of_week` | 144.4 |
+| `lag_10min` (10 min ago) | 118.6 |
+| `lag_1week` | 104.2 |
+| `origin_hour_of_day` | 90.3 |
+| `day_of_year` | 86.2 |
+| `temp_max` | 74.4 |
+| `roll_mean_24h` | 66.7 |
+| `temperature` | 60.4 |
+| `irr_irradiance_diffuse` | 42.9 |
 
 This is a **pilot sanity check, not the formal RQ1 experiment** — it
-confirms the explainer is wired correctly and the ranking is plausible
-(time-of-day and demand lags dominate, matching the EDA's hourly/duck-curve
-findings; weather signals cluster together mid-ranking rather than any
-one dominating). The actual background/evaluation sampling experiment
-grid is Weeks 8-9's work.
+confirms the explainer is wired correctly and the ranking is plausible.
+The very short-term lags (`lag_5min`, `lag_10min`) dominate, plausibly
+acting as a proxy for the current demand "regime" (weather, season,
+overall load level) that carries forward reasonably well even 24 hours
+ahead; `day_of_week` and `origin_hour_of_day` capture calendar structure;
+weather features contribute at a real but comparatively lower level. The
+actual background/evaluation sampling experiment grid is Weeks 8-9's work.
 
 ### Week 7 tests
 
@@ -379,5 +441,8 @@ line before importing `matplotlib.pyplot`.
       origin/target semantics, purged splits)
 - [x] LightGBM trained, tuned, and validated against baseline
 - [x] Model, features, hyperparameters, and split frozen for Week 7+
+      (`artifacts/training_real/`, input data `merged_full_frozen.csv`)
 - [x] TreeSHAP wired up in interventional mode, verified via additivity
-- [x] Two real bugs found and fixed before they could affect Weeks 8-9
+- [x] Three real issues found and fixed before they could affect Weeks
+      8-9: two SHAP wiring bugs, plus a frozen-model provenance mismatch
+      (see "Frozen-model provenance mismatch" above)
