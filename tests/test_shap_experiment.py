@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from shap_experiment import ranking_stability, summarise_stability
+from shap_pilot import BACKGROUND_METHODS, EVALUATION_METHODS
 
 
 def test_identical_rankings_are_perfectly_stable():
@@ -45,3 +46,10 @@ def test_summary_reports_means_and_minima():
     assert summary["spearman_mean"] == pytest.approx(0.75)
     assert summary["kendall_min"] == pytest.approx(0.4)
     assert summary["top_k_overlap_mean"] == pytest.approx(0.8)
+
+
+def test_method_roles_are_explicit():
+    assert "kmeans" in BACKGROUND_METHODS
+    assert "rare_event_stratified" not in BACKGROUND_METHODS
+    assert "rare_event_stratified" in EVALUATION_METHODS
+    assert "outcome_demand_stratified" in EVALUATION_METHODS

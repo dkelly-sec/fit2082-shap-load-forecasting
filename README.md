@@ -19,8 +19,10 @@ experiment grid in Weeks 8-9.
   month/time-of-day stratified, and rare-event-stratified sampling.
   Background samples now come only from the purged training split and
   evaluation samples only from the held-out purged test split. Rare-event
-  thresholds are pre-registered from training data (demand >= 95th
-  percentile or temperature outside the 5th-95th percentile range).
+  thresholds are pre-registered from training data. Primary rare events
+  are public holidays or origin-time temperature outside the training
+  5th-95th percentile range. Realised high target demand is kept as a
+  separate, explicitly retrospective evaluation cohort.
   A 12-run real-data pilot grid completed successfully across two
   background methods, two background sizes and three seeds. Mean pairwise
   ranking stability was Spearman 0.967, Kendall 0.895 and Top-10 overlap
@@ -298,6 +300,7 @@ Outputs under the selected pilot output directory (for the example above,
 pilot_global_ranking.csv     feature, mean_abs_shap
 pilot_global_ranking.png     bar chart, top 15 features
 rare_event_definition.json   training-only preregistered thresholds
+outcome_demand_definition.json  separate retrospective target-demand threshold
 run_metadata.json            methods, sizes, seed, sample pools and runtime
 ```
 
@@ -311,22 +314,30 @@ The sample-construction methods are implemented in `src/sampling.py`:
 - `time_stratified`: proportional coverage across calendar month and four
   six-hour time-of-day blocks
 - `rare_event_stratified`: 50% rare-event rows and 50% ordinary rows by
-  default, using thresholds fixed from the training split before SHAP
-  results are inspected
+  default. Primary rare events are public holidays and extreme origin-time
+  temperatures, using temperature thresholds fixed from training data
+- `outcome_demand_stratified`: a separate retrospective evaluation cohort
+  based on realised target demand at `t+24h`. It is never described as
+  information available at forecast origin
 
 Background and evaluation pools are deliberately separated. Background
 rows are drawn from the purged training split; evaluation rows are drawn
 from the held-out purged test split. This prevents the Week 7 placeholder
 behaviour of drawing both samples from the complete prepared frame.
+The implementation is shared, but method roles are explicit: background
+methods are `uniform`, `kmeans`, and `time_stratified`; evaluation methods
+are `uniform`, `time_stratified`, `rare_event_stratified`, and
+`outcome_demand_stratified`. `season_stratified` is intentionally left for
+David's follow-up contribution.
 
 The initial controlled grid should remain a pilot rather than the complete
 30-seed factorial experiment requested later in the project:
 
 | Variable | Initial pilot values |
 |---|---|
-| Background method | uniform, kmeans, time_stratified, rare_event_stratified |
+| Background method | uniform, kmeans, time_stratified |
 | Background size | 50, 200 |
-| Evaluation method | uniform, time_stratified, rare_event_stratified |
+| Evaluation method | uniform, time_stratified, rare_event_stratified, outcome_demand_stratified |
 | Evaluation size | 100, 500 |
 | Seeds | 2082, 2083, 2084 |
 
@@ -402,6 +413,11 @@ Across all 66 run pairs, mean/minimum stability was:
 
 These are pilot results used to validate the design and estimate runtime,
 not the final factorial experiment or final research conclusion.
+
+The experiment writes `runs.csv`, `pairwise_stability.csv`,
+`rankings_wide.csv`, `rankings_long.csv`, and `results_schema.json`.
+The long table contains `feature`, `run_id`, `mean_abs_shap`, and `rank`,
+so later analysis can append runs without parsing per-run files.
 
 ### Week 7 tests
 

@@ -158,6 +158,7 @@ def test_full_pilot_runs_end_to_end_and_writes_outputs(trained_setup, tmp_path):
     assert (output_dir / "pilot_global_ranking.csv").exists()
     assert (output_dir / "pilot_global_ranking.png").exists()
     assert (output_dir / "rare_event_definition.json").exists()
+    assert (output_dir / "outcome_demand_definition.json").exists()
     assert (output_dir / "run_metadata.json").exists()
     assert len(ranking) > 0
     assert (ranking >= 0).all()  # mean absolute SHAP values are never negative

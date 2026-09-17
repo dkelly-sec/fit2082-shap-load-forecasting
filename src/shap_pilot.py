@@ -10,12 +10,9 @@ central variable this whole project's sampling-sensitivity research
 manipulates. (`tree_path_dependent` mode ignores the background dataset
 entirely, which would make background-sample experiments meaningless.)
 
-This module deliberately keeps sample construction simple (plain random
-sampling by size) for the Week 7 pilot. The full background/evaluation
-CONSTRUCTION METHODS required by the project spec -- uniform random,
-k-means summarisation, time-stratified, rare-event-stratified -- are a
-Weeks 8-9 concern and belong in a separate sample-construction module that
-this pilot's `draw_sample()` function is designed to be swapped out for.
+Week 8 replaces the original plain-random placeholder with the controlled
+methods in ``sampling.py``. Method roles and source pools are validated here
+before SHAP is computed.
 
 Usage
 -----
@@ -43,7 +40,20 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from load_model import FrozenModel, load_frozen_model  # noqa: E402
 from training import chronological_split, load_config, prepare_frame  # noqa: E402
-from sampling import construct_sample, define_rare_events  # noqa: E402
+from sampling import (  # noqa: E402
+    construct_sample,
+    define_outcome_demand_events,
+    define_rare_events,
+)
+
+
+BACKGROUND_METHODS = ("uniform", "kmeans", "time_stratified")
+EVALUATION_METHODS = (
+    "uniform",
+    "time_stratified",
+    "rare_event_stratified",
+    "outcome_demand_stratified",
+)
 
 
 def draw_sample(frame: pd.DataFrame, feature_names: list[str], size: int, seed: int) -> pd.DataFrame:
@@ -51,11 +61,8 @@ def draw_sample(frame: pd.DataFrame, feature_names: list[str], size: int, seed: 
     Draw a plain random sample of `size` rows, restricted to the model's
     exact feature columns in the exact expected order.
 
-    This is intentionally the simplest possible sample-construction
-    strategy -- a placeholder for Week 7's pilot. Weeks 8-9 replace this
-    with the actual experimental variable: background/evaluation size AND
-    construction method (uniform, k-means, time-stratified, rare-event-
-    stratified), per the project's RQ1 design.
+    Retained for backward compatibility with the original Week 7 tests.
+    Week 8 execution uses ``construct_sample`` instead.
     """
     if size > len(frame):
         raise ValueError(f"Requested sample size {size} exceeds available rows ({len(frame)}).")
@@ -217,17 +224,22 @@ def run_pilot(
 
     splits = chronological_split(frame, config)
     rare_definition = define_rare_events(splits["train"])
+    outcome_definition = define_outcome_demand_events(splits["train"])
+    if background_method not in BACKGROUND_METHODS:
+        raise ValueError(f"Unsupported background method: {background_method}")
+    if evaluation_method not in EVALUATION_METHODS:
+        raise ValueError(f"Unsupported evaluation method: {evaluation_method}")
     print(
         f"Drawing {background_method} background from train (n={background_size}) "
         f"and {evaluation_method} evaluation sample from test (n={evaluation_size})..."
     )
     background = construct_sample(
         splits["train"], bundle.feature_names, background_size, seed,
-        background_method, rare_definition,
+        background_method, rare_definition, outcome_definition,
     )
     evaluation = construct_sample(
         splits["test"], bundle.feature_names, evaluation_size, seed + 1,
-        evaluation_method, rare_definition,
+        evaluation_method, rare_definition, outcome_definition,
     )
 
     print("Computing SHAP values (interventional TreeSHAP)...")
@@ -242,6 +254,9 @@ def run_pilot(
     plot_ranking(ranking, output_dir / "pilot_global_ranking.png")
     (output_dir / "rare_event_definition.json").write_text(
         json.dumps(rare_definition.to_dict(), indent=2), encoding="utf-8"
+    )
+    (output_dir / "outcome_demand_definition.json").write_text(
+        json.dumps(outcome_definition.to_dict(), indent=2), encoding="utf-8"
     )
     (output_dir / "run_metadata.json").write_text(json.dumps({
         "background_method": background_method,
@@ -270,12 +285,12 @@ def main():
     parser.add_argument("--evaluation-size", type=int, default=100)
     parser.add_argument(
         "--background-method",
-        choices=["uniform", "kmeans", "time_stratified", "rare_event_stratified"],
+        choices=BACKGROUND_METHODS,
         default="uniform",
     )
     parser.add_argument(
         "--evaluation-method",
-        choices=["uniform", "kmeans", "time_stratified", "rare_event_stratified"],
+        choices=EVALUATION_METHODS,
         default="uniform",
     )
     parser.add_argument("--seed", type=int, default=2082)

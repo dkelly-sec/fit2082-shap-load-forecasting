@@ -14,8 +14,13 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from load_model import load_frozen_model  # noqa: E402
-from sampling import construct_sample, define_rare_events  # noqa: E402
-from shap_pilot import check_additivity, compute_global_shap_ranking  # noqa: E402
+from sampling import construct_sample, define_outcome_demand_events, define_rare_events  # noqa: E402
+from shap_pilot import (  # noqa: E402
+    BACKGROUND_METHODS,
+    EVALUATION_METHODS,
+    check_additivity,
+    compute_global_shap_ranking,
+)
 from training import chronological_split, load_config, prepare_frame  # noqa: E402
 
 
@@ -70,6 +75,12 @@ def run_experiment(
         raise ValueError("Prepared feature order does not match the frozen model.")
     splits = chronological_split(frame, config)
     rare_definition = define_rare_events(splits["train"])
+    outcome_definition = define_outcome_demand_events(splits["train"])
+    unsupported_background = set(background_methods) - set(BACKGROUND_METHODS)
+    if unsupported_background:
+        raise ValueError(f"Unsupported background methods: {sorted(unsupported_background)}")
+    if evaluation_method not in EVALUATION_METHODS:
+        raise ValueError(f"Unsupported evaluation method: {evaluation_method}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rankings: dict[str, pd.Series] = {}
@@ -79,11 +90,11 @@ def run_experiment(
         print(f"Running {run_id}")
         background = construct_sample(
             splits["train"], bundle.feature_names, size, seed,
-            method, rare_definition,
+            method, rare_definition, outcome_definition,
         )
         evaluation = construct_sample(
             splits["test"], bundle.feature_names, evaluation_size, seed + 100_000,
-            evaluation_method, rare_definition,
+            evaluation_method, rare_definition, outcome_definition,
         )
         started = time.perf_counter()
         ranking, explainer, shap_values = compute_global_shap_ranking(bundle, background, evaluation)
@@ -116,17 +127,36 @@ def run_experiment(
         "background_pool": "purged training split",
         "evaluation_pool": "held-out purged test split",
         "rare_event_definition": rare_definition.to_dict(),
+        "outcome_demand_definition": outcome_definition.to_dict(),
         "runtime_seconds_total": float(runs["elapsed_seconds"].sum()),
         "runtime_seconds_mean": float(runs["elapsed_seconds"].mean()),
         "stability": summarise_stability(pairwise),
     }
     runs.to_csv(output_dir / "runs.csv", index=False)
     pairwise.to_csv(output_dir / "pairwise_stability.csv", index=False)
-    pd.DataFrame(rankings).to_csv(output_dir / "rankings_wide.csv")
+    rankings_wide = pd.DataFrame(rankings).rename_axis("feature")
+    rankings_wide.to_csv(output_dir / "rankings_wide.csv")
+    rankings_long = rankings_wide.reset_index().melt(
+        id_vars="feature", var_name="run_id", value_name="mean_abs_shap"
+    )
+    rankings_long["rank"] = rankings_long.groupby("run_id")["mean_abs_shap"].rank(
+        ascending=False, method="min"
+    ).astype(int)
+    rankings_long.to_csv(output_dir / "rankings_long.csv", index=False)
     (output_dir / "experiment_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     (output_dir / "rare_event_definition.json").write_text(
         json.dumps(rare_definition.to_dict(), indent=2), encoding="utf-8"
     )
+    (output_dir / "outcome_demand_definition.json").write_text(
+        json.dumps(outcome_definition.to_dict(), indent=2), encoding="utf-8"
+    )
+    (output_dir / "results_schema.json").write_text(json.dumps({
+        "schema_version": 1,
+        "runs.csv": list(runs.columns),
+        "pairwise_stability.csv": list(pairwise.columns),
+        "rankings_long.csv": list(rankings_long.columns),
+        "rankings_wide.csv": ["feature", "<one column per run_id>"],
+    }, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))
     return summary
 

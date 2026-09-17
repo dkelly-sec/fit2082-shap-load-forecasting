@@ -12,14 +12,25 @@ from sklearn.preprocessing import StandardScaler
 
 @dataclass(frozen=True)
 class RareEventDefinition:
-    """Thresholds fixed from training data before inspecting SHAP results."""
+    """Origin-time event definition fixed before inspecting SHAP results."""
 
-    demand_quantile: float
     temperature_low_quantile: float
     temperature_high_quantile: float
-    demand_high: float
     temperature_low: float
     temperature_high: float
+    includes_public_holidays: bool = True
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class OutcomeDemandDefinition:
+    """Retrospective target-demand event definition, kept separate from origin-time events."""
+
+    demand_quantile: float
+    demand_high: float
+    target_column: str = "demand"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -27,36 +38,52 @@ class RareEventDefinition:
 
 def define_rare_events(
     training_frame: pd.DataFrame,
-    demand_quantile: float = 0.95,
     temperature_low_quantile: float = 0.05,
     temperature_high_quantile: float = 0.95,
 ) -> RareEventDefinition:
-    """Pre-register rare-event thresholds using the training split only."""
-    required = {"demand", "temperature"}
+    """Define primary rare events from origin-time temperature and public holidays."""
+    required = {"temperature", "is_public_holiday"}
     missing = required - set(training_frame.columns)
     if missing:
         raise ValueError(f"Cannot define rare events; missing columns: {sorted(missing)}")
     if not (0 < temperature_low_quantile < temperature_high_quantile < 1):
         raise ValueError("Temperature quantiles must satisfy 0 < low < high < 1.")
-    if not 0 < demand_quantile < 1:
-        raise ValueError("demand_quantile must be between 0 and 1.")
     return RareEventDefinition(
-        demand_quantile=demand_quantile,
         temperature_low_quantile=temperature_low_quantile,
         temperature_high_quantile=temperature_high_quantile,
-        demand_high=float(training_frame["demand"].quantile(demand_quantile)),
         temperature_low=float(training_frame["temperature"].quantile(temperature_low_quantile)),
         temperature_high=float(training_frame["temperature"].quantile(temperature_high_quantile)),
     )
 
 
 def rare_event_mask(frame: pd.DataFrame, definition: RareEventDefinition) -> pd.Series:
-    """High demand or either temperature tail, using pre-registered cut-offs."""
+    """Public holiday or origin-time temperature tail using fixed cut-offs."""
     return (
-        (frame["demand"] >= definition.demand_high)
+        frame["is_public_holiday"].astype(bool)
         | (frame["temperature"] <= definition.temperature_low)
         | (frame["temperature"] >= definition.temperature_high)
     )
+
+
+def define_outcome_demand_events(
+    training_frame: pd.DataFrame, demand_quantile: float = 0.95
+) -> OutcomeDemandDefinition:
+    """Define a separate retrospective high-target-demand cohort from training data."""
+    if "demand" not in training_frame:
+        raise ValueError("Cannot define outcome-demand events; missing column: demand")
+    if not 0 < demand_quantile < 1:
+        raise ValueError("demand_quantile must be between 0 and 1.")
+    return OutcomeDemandDefinition(
+        demand_quantile=demand_quantile,
+        demand_high=float(training_frame["demand"].quantile(demand_quantile)),
+    )
+
+
+def outcome_demand_mask(
+    frame: pd.DataFrame, definition: OutcomeDemandDefinition
+) -> pd.Series:
+    """Select realised high demand at t+24h for retrospective analysis only."""
+    return frame[definition.target_column] >= definition.demand_high
 
 
 def _validate(frame: pd.DataFrame, feature_names: list[str], size: int) -> None:
@@ -97,6 +124,29 @@ def _time_stratified_indices(frame: pd.DataFrame, size: int, seed: int) -> np.nd
     return np.asarray(selected[:size])
 
 
+def _binary_stratified_sample(
+    frame: pd.DataFrame,
+    mask: pd.Series,
+    size: int,
+    seed: int,
+    selected_fraction: float,
+) -> pd.DataFrame:
+    if not 0 < selected_fraction < 1:
+        raise ValueError("selected_fraction must be between 0 and 1.")
+    selected_pool, ordinary_pool = frame[mask], frame[~mask]
+    selected_n = min(len(selected_pool), round(size * selected_fraction))
+    ordinary_n = size - selected_n
+    if ordinary_n > len(ordinary_pool):
+        ordinary_n = len(ordinary_pool)
+        selected_n = size - ordinary_n
+    if selected_n > len(selected_pool):
+        raise ValueError("Not enough selected-event rows for the requested stratified sample.")
+    return pd.concat([
+        selected_pool.sample(n=selected_n, random_state=seed),
+        ordinary_pool.sample(n=ordinary_n, random_state=seed + 1),
+    ]).sample(frac=1, random_state=seed + 2)
+
+
 def _kmeans_representatives(
     frame: pd.DataFrame, feature_names: list[str], size: int, seed: int
 ) -> pd.DataFrame:
@@ -129,6 +179,7 @@ def construct_sample(
     seed: int,
     method: str = "uniform",
     rare_definition: RareEventDefinition | None = None,
+    outcome_definition: OutcomeDemandDefinition | None = None,
     rare_fraction: float = 0.5,
 ) -> pd.DataFrame:
     """Construct an exact-size feature sample using a registered method."""
@@ -145,20 +196,17 @@ def construct_sample(
     if method == "rare_event_stratified":
         if rare_definition is None:
             raise ValueError("rare_event_stratified sampling requires a fixed rare-event definition.")
-        if not 0 < rare_fraction < 1:
-            raise ValueError("rare_fraction must be between 0 and 1.")
-        mask = rare_event_mask(frame, rare_definition)
-        rare, ordinary = frame[mask], frame[~mask]
-        rare_n = min(len(rare), round(size * rare_fraction))
-        ordinary_n = size - rare_n
-        if ordinary_n > len(ordinary):
-            ordinary_n = len(ordinary)
-            rare_n = size - ordinary_n
-        if rare_n > len(rare):
-            raise ValueError("Not enough rare-event rows for the requested stratified sample.")
-        result = pd.concat([
-            rare.sample(n=rare_n, random_state=seed),
-            ordinary.sample(n=ordinary_n, random_state=seed + 1),
-        ]).sample(frac=1, random_state=seed + 2)
+        result = _binary_stratified_sample(
+            frame, rare_event_mask(frame, rare_definition), size, seed, rare_fraction
+        )
+        return result[feature_names].reset_index(drop=True)
+    if method == "outcome_demand_stratified":
+        if outcome_definition is None:
+            raise ValueError(
+                "outcome_demand_stratified sampling requires a fixed outcome-demand definition."
+            )
+        result = _binary_stratified_sample(
+            frame, outcome_demand_mask(frame, outcome_definition), size, seed, rare_fraction
+        )
         return result[feature_names].reset_index(drop=True)
     raise ValueError(f"Unknown sampling method: {method}")
