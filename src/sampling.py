@@ -124,27 +124,43 @@ def _time_stratified_indices(frame: pd.DataFrame, size: int, seed: int) -> np.nd
     return np.asarray(selected[:size])
 
 
-def _binary_stratified_sample(
-    frame: pd.DataFrame,
-    mask: pd.Series,
-    size: int,
-    seed: int,
-    selected_fraction: float,
-) -> pd.DataFrame:
-    if not 0 < selected_fraction < 1:
-        raise ValueError("selected_fraction must be between 0 and 1.")
-    selected_pool, ordinary_pool = frame[mask], frame[~mask]
-    selected_n = min(len(selected_pool), round(size * selected_fraction))
-    ordinary_n = size - selected_n
-    if ordinary_n > len(ordinary_pool):
-        ordinary_n = len(ordinary_pool)
-        selected_n = size - ordinary_n
-    if selected_n > len(selected_pool):
-        raise ValueError("Not enough selected-event rows for the requested stratified sample.")
-    return pd.concat([
-        selected_pool.sample(n=selected_n, random_state=seed),
-        ordinary_pool.sample(n=ordinary_n, random_state=seed + 1),
-    ]).sample(frac=1, random_state=seed + 2)
+def _season_stratified_indices(frame: pd.DataFrame, size: int, seed: int) -> np.ndarray:
+    """
+    Proportional coverage across the four calendar seasons (summer, autumn,
+    winter, spring -- per clean_merge.py's `season` column), rather than
+    the finer month/time-of-day grid `time_stratified` uses. With only 4
+    strata (vs up to 48 for time_stratified), this stays meaningfully
+    stratified even at the smallest evaluation sizes in the project's grid
+    (e.g. 100 rows still allocates ~25 per season, not ~1-2 per bucket).
+
+    Deliberately a self-contained implementation (not sharing code with
+    `_time_stratified_indices`) despite using the same allocation
+    algorithm, so this addition cannot alter that function's already-
+    tested behaviour.
+    """
+    if "season" not in frame:
+        raise ValueError("Season-stratified sampling requires a season column.")
+    strata = frame["season"].astype(str)
+    rng = np.random.default_rng(seed)
+    selected: list[int] = []
+    groups = {key: np.asarray(values, dtype=int) for key, values in strata.groupby(strata).groups.items()}
+    exact = {key: size * len(values) / len(frame) for key, values in groups.items()}
+    allocations = {key: min(len(groups[key]), int(np.floor(value))) for key, value in exact.items()}
+    remainder = size - sum(allocations.values())
+    order = sorted(groups, key=lambda key: exact[key] - allocations[key], reverse=True)
+    for key in order:
+        if remainder == 0:
+            break
+        if allocations[key] < len(groups[key]):
+            allocations[key] += 1
+            remainder -= 1
+    for key, values in groups.items():
+        selected.extend(rng.choice(values, size=allocations[key], replace=False).tolist())
+    if len(selected) < size:
+        remaining = np.setdiff1d(np.arange(len(frame)), np.asarray(selected), assume_unique=False)
+        selected.extend(rng.choice(remaining, size=size - len(selected), replace=False).tolist())
+    rng.shuffle(selected)
+    return np.asarray(selected[:size])
 
 
 def _kmeans_representatives(
@@ -172,6 +188,29 @@ def _kmeans_representatives(
     return frame.iloc[selected][feature_names].reset_index(drop=True)
 
 
+def _binary_stratified_sample(
+    frame: pd.DataFrame,
+    mask: pd.Series,
+    size: int,
+    seed: int,
+    selected_fraction: float,
+) -> pd.DataFrame:
+    if not 0 < selected_fraction < 1:
+        raise ValueError("selected_fraction must be between 0 and 1.")
+    selected_pool, ordinary_pool = frame[mask], frame[~mask]
+    selected_n = min(len(selected_pool), round(size * selected_fraction))
+    ordinary_n = size - selected_n
+    if ordinary_n > len(ordinary_pool):
+        ordinary_n = len(ordinary_pool)
+        selected_n = size - ordinary_n
+    if selected_n > len(selected_pool):
+        raise ValueError("Not enough selected-event rows for the requested stratified sample.")
+    return pd.concat([
+        selected_pool.sample(n=selected_n, random_state=seed),
+        ordinary_pool.sample(n=ordinary_n, random_state=seed + 1),
+    ]).sample(frac=1, random_state=seed + 2)
+
+
 def construct_sample(
     frame: pd.DataFrame,
     feature_names: list[str],
@@ -191,6 +230,8 @@ def construct_sample(
         return frame.sample(n=size, random_state=seed)[feature_names].reset_index(drop=True)
     if method == "time_stratified":
         return frame.iloc[_time_stratified_indices(frame, size, seed)][feature_names].reset_index(drop=True)
+    if method == "season_stratified":
+        return frame.iloc[_season_stratified_indices(frame, size, seed)][feature_names].reset_index(drop=True)
     if method == "kmeans":
         return _kmeans_representatives(frame, feature_names, size, seed)
     if method == "rare_event_stratified":

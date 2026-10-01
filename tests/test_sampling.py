@@ -89,3 +89,87 @@ def test_time_stratified_handles_nonzero_source_index(frame):
     test_like_split = frame.iloc[1700:]
     sample = construct_sample(test_like_split, ["x", "y"], 60, 2082, "time_stratified")
     assert sample.shape == (60, 2)
+
+
+def _frame_with_seasons():
+    n = 2880  # exactly 2 full years at daily resolution
+    timestamps = pd.date_range("2024-01-01", periods=n, freq="D")
+    month = timestamps.month
+    season_map = {12: "summer", 1: "summer", 2: "summer",
+                  3: "autumn", 4: "autumn", 5: "autumn",
+                  6: "winter", 7: "winter", 8: "winter",
+                  9: "spring", 10: "spring", 11: "spring"}
+    return pd.DataFrame({
+        "timestamp": timestamps,
+        "season": [season_map[m] for m in month],
+        "x": np.sin(np.arange(n) / 20),
+        "y": np.cos(np.arange(n) / 30),
+    })
+
+
+def test_season_stratified_returns_exact_ordered_features():
+    frame = _frame_with_seasons()
+    sample = construct_sample(frame, ["y", "x"], 40, 2082, "season_stratified")
+    assert sample.shape == (40, 2)
+    assert list(sample.columns) == ["y", "x"]
+    assert not sample.duplicated().any()
+
+
+def test_season_stratified_is_reproducible():
+    frame = _frame_with_seasons()
+    first = construct_sample(frame, ["x", "y"], 100, 7, "season_stratified")
+    second = construct_sample(frame, ["x", "y"], 100, 7, "season_stratified")
+    pd.testing.assert_frame_equal(first, second)
+
+
+def test_season_stratified_matches_population_proportions_better_than_random():
+    """
+    The actual point of this method: tighter seasonal representation than
+    a chance draw, verified over several seeds so this isn't a fluke of
+    one lucky/unlucky random sample.
+    """
+    frame = _frame_with_seasons()
+    population = frame["season"].value_counts(normalize=True).sort_index()
+
+    ctx = ["x", "y", "season"]
+    strat_errors, random_errors = [], []
+    for seed in range(8):
+        strat = construct_sample(frame, ctx, 400, seed, "season_stratified")
+        rand = construct_sample(frame, ctx, 400, seed, "uniform")
+        strat_prop = strat["season"].value_counts(normalize=True).reindex(population.index, fill_value=0)
+        rand_prop = rand["season"].value_counts(normalize=True).reindex(population.index, fill_value=0)
+        strat_errors.append(np.abs(strat_prop - population).sum())
+        random_errors.append(np.abs(rand_prop - population).sum())
+
+    assert np.mean(strat_errors) < np.mean(random_errors), (
+        f"season_stratified mean deviation {np.mean(strat_errors):.4f} was not tighter "
+        f"than uniform's {np.mean(random_errors):.4f}"
+    )
+
+
+def test_season_stratified_covers_all_four_seasons_even_at_small_size():
+    """
+    With only 4 strata, even a small evaluation size (e.g. 100, the
+    project's smallest planned evaluation size) should meaningfully
+    allocate to every season, unlike time_stratified's 48 strata where
+    small sizes leave many buckets empty.
+    """
+    frame = _frame_with_seasons()
+    ctx = ["x", "y", "season"]
+    sample = construct_sample(frame, ctx, 100, 2082, "season_stratified")
+    counts = sample["season"].value_counts()
+    assert len(counts) == 4, f"expected all 4 seasons represented, got {list(counts.index)}"
+    assert counts.min() >= 15, f"smallest season allocation was {counts.min()}, expected roughly ~25 each"
+
+
+def test_season_stratified_requires_season_column():
+    frame = _frame_with_seasons().drop(columns=["season"])
+    with pytest.raises(ValueError, match="season column"):
+        construct_sample(frame, ["x", "y"], 50, 1, "season_stratified")
+
+
+def test_season_stratified_handles_nonzero_source_index():
+    frame = _frame_with_seasons()
+    test_like_split = frame.iloc[2000:]
+    sample = construct_sample(test_like_split, ["x", "y"], 60, 2082, "season_stratified")
+    assert sample.shape == (60, 2)

@@ -51,6 +51,7 @@ BACKGROUND_METHODS = ("uniform", "kmeans", "time_stratified")
 EVALUATION_METHODS = (
     "uniform",
     "time_stratified",
+    "season_stratified",
     "rare_event_stratified",
     "outcome_demand_stratified",
 )
