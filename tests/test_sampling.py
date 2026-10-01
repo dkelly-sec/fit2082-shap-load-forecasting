@@ -173,3 +173,26 @@ def test_season_stratified_handles_nonzero_source_index():
     test_like_split = frame.iloc[2000:]
     sample = construct_sample(test_like_split, ["x", "y"], 60, 2082, "season_stratified")
     assert sample.shape == (60, 2)
+
+
+def test_kmeans_tolerates_nan_features_and_returns_real_rows():
+    """
+    The real frozen dataset has NaNs in temp_max (incomplete BOM days).
+    k-means must still run, and must return the original rows with their
+    NaNs intact rather than imputed values the model never trained on.
+    """
+    n = 2000
+    rng = np.random.default_rng(0)
+    frame = pd.DataFrame({
+        "x": rng.normal(size=n),
+        "temp_max": np.linspace(10, 35, n),
+    })
+    frame.loc[100:300, "temp_max"] = np.nan
+    sample = construct_sample(frame, ["x", "temp_max"], 200, 0, "kmeans")
+    assert sample.shape == (200, 2)
+    assert not sample.duplicated().any()
+    # every returned row must exist verbatim in the source frame
+    merged = sample.merge(frame, on=["x", "temp_max"], how="left", indicator=True)
+    nan_rows = sample["temp_max"].isna()
+    assert (merged.loc[~nan_rows.to_numpy(), "_merge"] == "both").all()
+    assert set(sample.loc[nan_rows, "x"]).issubset(set(frame.loc[frame["temp_max"].isna(), "x"]))

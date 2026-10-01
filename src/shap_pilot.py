@@ -2,7 +2,7 @@
 Week 7 pilot: wire up shap.TreeExplainer against the frozen LightGBM model,
 compute global SHAP feature-importance rankings on a small pilot sample,
 and verify the output is mathematically sane before scaling up to the full
-background/evaluation sampling experiment grid in Weeks 8-9.
+background/evaluation sampling experiment grid.
 
 Uses TreeSHAP's `interventional` perturbation mode specifically, since that
 is the mode that takes an explicit background dataset as input -- the
@@ -12,12 +12,13 @@ entirely, which would make background-sample experiments meaningless.)
 
 Week 8 replaces the original plain-random placeholder with the controlled
 methods in ``sampling.py``. Method roles and source pools are validated here
-before SHAP is computed.
+before SHAP is computed. The full repeated-sampling grid lives in
+``shap_experiment.py``; this script runs a single configuration.
 
 Usage
 -----
     python src/shap_pilot.py \
-        --data data/interim/merged_full.csv \
+        --data data/interim/merged_full_frozen.csv \
         --config configs/training.json \
         --artifacts artifacts/training_real \
         --background-size 200 \
@@ -102,9 +103,9 @@ def compute_global_shap_ranking(
         data=masker,
         feature_perturbation="interventional",
     )
-    # SHAP's built-in check uses a strict generic tolerance that is not
-    # appropriate for this frozen regression_l1 model. Every caller runs the
-    # documented scale-aware check_additivity() immediately after this call.
+    # SHAP's built-in check raises on the threshold-coincidence gaps described
+    # in check_additivity() below. Every caller runs that documented,
+    # scale-aware check immediately after this call instead.
     shap_values = explainer.shap_values(evaluation, check_additivity=False)
 
     ranking = pd.Series(
@@ -130,37 +131,33 @@ def check_additivity(
     must equal the explainer's base value plus the sum of that row's SHAP
     values.
 
-    Tolerance is set relative to the scale of the predictions rather than
-    a fixed small constant, because LightGBM's `regression_l1` (MAE)
-    objective -- used by this project's frozen model -- computes leaf
-    values via an iterative approximation rather than an exact closed-form
-    value (unlike the L2/MSE objective, where the optimal leaf value is
-    just a mean). This introduces a small, bounded reconstruction gap
-    between TreeSHAP's decomposition and the model's raw prediction that
-    is inherent to the objective choice, not a wiring defect.
+    Why gaps occur (diagnosed in Week 9 with scripts/diagnose_additivity.py):
+    most rows reconstruct to within ~0.001 MW, but a small number of rows
+    show gaps of up to ~110 MW. These are rows where a feature value sits
+    exactly on a tree split threshold, so LightGBM's native prediction and
+    SHAP's internal copy of the tree route the row down different branches;
+    the gap equals the difference between the two leaves. Confirmed on the
+    frozen model: for the worst row of the seed-2087 run, nudging
+    `temperature` (10.9) by one part in a million changes the native
+    prediction by 109.5519 MW, exactly matching that row's error.
 
-    This was confirmed empirically in three stages:
-    1. Swapping in `regression` (L2) or `huber` objectives on the same data
-       shrinks the gap by roughly 5x and 10,000x respectively, isolating
-       the cause to the L1 objective's leaf-fitting procedure.
-    2. The gap does NOT scale with the number of boosting rounds (stayed
-       ~5.6 MW across 50, 200, and 678 trees on a representative synthetic
-       test) -- it instead scales with model complexity (num_leaves) and
-       dataset noise/complexity. The real project dataset (larger, noisier,
-       more extreme-event structure than any synthetic test) produces a
-       somewhat larger gap (~13 MW) than a small synthetic test, which is
-       consistent with this, not evidence of a bug.
-    The 1% threshold is a diagnostic warning threshold. A separate 5%
-    hard limit stops the run. This distinction matters in a sampling
-    experiment because changing sampled rows can expose a larger worst-case
-    L1 reconstruction gap; that fact is recorded rather than hidden by
-    repeatedly tuning one pass/fail tolerance.
+    This is common in this dataset because daily temperature and hourly
+    irradiance are broadcast across 5-minute rows, so exact values repeat
+    many times, and LightGBM places split thresholds at observed values.
 
-    A genuine wiring bug (wrong background, mismatched feature order,
-    wrong perturbation mode) produces errors orders of magnitude larger
-    than this -- hundreds or thousands of MW, not single digits relative
-    to demand values in the thousands -- so this tolerance remains a
-    meaningful check, not a rubber stamp.
+    Week 7 originally attributed the gap to the `regression_l1` objective.
+    That explanation was wrong: a plain `regression_l1` model reconstructs
+    exactly in isolation, and the objective comparison that suggested it
+    was misleading because each objective trains different trees with
+    thresholds in different places.
+
+    The impact on global rankings is small and bounded: a row's error can
+    shift a run's mean |SHAP| totals by at most error / evaluation size.
+    The 1% threshold is a diagnostic warning; a separate 5% hard limit
+    stops the run. A genuine wiring bug (wrong background, mismatched
+    feature order, wrong perturbation mode) produces errors far larger and
+    on most rows, not a handful, so the hard limit remains a meaningful
+    guard.
     """
     predictions = bundle.model.predict(evaluation)
     reconstructed = explainer.expected_value + shap_values.sum(axis=1)

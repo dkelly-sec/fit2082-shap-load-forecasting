@@ -166,7 +166,16 @@ def _season_stratified_indices(frame: pd.DataFrame, size: int, seed: int) -> np.
 def _kmeans_representatives(
     frame: pd.DataFrame, feature_names: list[str], size: int, seed: int
 ) -> pd.DataFrame:
-    values = frame[feature_names].to_numpy(dtype=float)
+    # The frozen dataset contains genuine NaNs (e.g. temp_max on the two
+    # incomplete BOM days). LightGBM and TreeSHAP handle these natively,
+    # but k-means cannot compute distances with them. Fill NaNs with each
+    # column's median ONLY for the clustering computation used to choose
+    # representative rows; the rows returned below are the real, unmodified
+    # rows (NaNs intact), so the model sees exactly what it saw in training
+    # and the candidate pool matches every other sampling method.
+    clustering_values = frame[feature_names].astype(float)
+    clustering_values = clustering_values.fillna(clustering_values.median()).fillna(0.0)
+    values = clustering_values.to_numpy(dtype=float)
     scaled = StandardScaler().fit_transform(values)
     model = MiniBatchKMeans(
         n_clusters=size,
