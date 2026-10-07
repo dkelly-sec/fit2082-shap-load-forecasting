@@ -14,6 +14,20 @@ measures how stable global feature rankings are across sampling designs.
 
 ## Project status (running log, most recent first)
 
+- **Week 10:** Grid extended on supervisor advice by adding background
+  sizes 25 and 100, after first timing one seed of each new
+  configuration: 120 configurations × 30 seeds = **3,600 runs** (about
+  3.7 more hours of SHAP compute). New `src/analyse_stability.py`
+  regenerates every RQ1/RQ3 table and figure from the grid output,
+  including Kruskal–Wallis/Dunn tests, paired size comparisons and
+  bootstrap confidence intervals. Findings: background choices drive how
+  repeatable the whole ranking is; evaluation method drives which features
+  reach the top. Rare-event evaluation changes the top 5 in 27.6% of runs
+  (against 1–2% for uniform, time- and season-stratified), because
+  `temp_max` rises from 8th to 6th under rare conditions. For the top 5,
+  a 50-row background matches 200 at about a quarter of the cost; the top
+  10 needs 100. Final report drafting under way; RQ2 (reliability) in
+  progress.
 - **Week 9:** Full RQ1 sampling grid completed: 60 configurations
   (3 background methods × 2 background sizes × 5 evaluation methods ×
   2 evaluation sizes) × 30 seeds = **1,800 SHAP runs** against the frozen
@@ -219,6 +233,15 @@ treat actual observations at `t+24h` as information available at origin —
 this was a deliberate methodological choice to avoid treating future
 weather as known, which real day-ahead forecasting can't assume.
 
+**Caveat (found in Week 10):** daily temperature values are copied onto
+every 5-minute row of their day, and a BOM daily maximum covers 9am to
+9am the next morning. An origin early in a day therefore sees that day's
+maximum temperature before it occurs: a small same-day look-ahead. The
+model is frozen, so this is documented as a limitation rather than fixed.
+It may inflate the measured importance of the daily temperature features,
+but does not affect the stability comparisons, since every configuration
+explains the same model.
+
 ### Training outputs
 
 Outputs under `artifacts/training_real/` are:
@@ -330,9 +353,11 @@ run_metadata.json               methods, sizes, seed, sample pools and runtime
   other method
 - `time_stratified`: proportional coverage across calendar month and four
   six-hour time-of-day blocks (up to 48 strata)
-- `season_stratified`: proportional coverage across the four seasons. With
-  only 4 strata, it stays meaningfully stratified even at small evaluation
-  sizes (100 rows still allocates ~25 per season)
+- `season_stratified`: proportional coverage across the four seasons.
+  Evaluation samples come from the test split, whose forecast origins run
+  from 14 September to 29 December 2025, so only spring and early summer
+  are present. In practice it balances two seasons (roughly 73% spring,
+  27% summer) and behaves almost like uniform sampling
 - `rare_event_stratified`: 50% rare-event rows and 50% ordinary rows by
   default. Primary rare events are public holidays and extreme origin-time
   temperatures, using temperature thresholds fixed from training data
@@ -584,6 +609,115 @@ construction method, and how much the sampling design changes the
 answer, is in `within_condition_stability.csv` and
 `between_condition_agreement.csv`, and is Week 10's analysis.
 
+## Run: Week 10 — extended grid and analysis (RQ1, RQ3)
+
+### Extending the grid
+
+Copy the Week 9 results first, so the original run is kept as a record and
+the extension only computes new runs (resume skips everything already in
+the folder):
+
+```powershell
+Copy-Item -Recurse artifacts/shap_week9_grid artifacts/shap_week10_grid
+```
+
+Time one seed of each new configuration before committing to the full run:
+
+```bash
+python src/shap_experiment.py \
+  --data data/interim/merged_full_frozen.csv \
+  --artifacts artifacts/training_real \
+  --background-methods uniform,kmeans,time_stratified \
+  --background-sizes 25,50,100,200 \
+  --evaluation-methods uniform,time_stratified,season_stratified,rare_event_stratified,outcome_demand_stratified \
+  --evaluation-sizes 100,500 \
+  --n-seeds 1 \
+  --output artifacts/shap_week10_grid
+```
+
+Then rerun the same command with `--n-seeds 30`. Mean SHAP seconds per run
+across the full grid:
+
+| Background size | Evaluation 100 | Evaluation 500 |
+|---|---:|---:|
+| 25 | 2.6 | 6.1 |
+| 50 | 2.9 | 8.8 |
+| 100 | 4.5 | 17.2 |
+| 200 | 7.8 | 33.3 |
+
+### Analysis
+
+```bash
+python src/analyse_stability.py \
+  --grid artifacts/shap_week10_grid \
+  --output artifacts/analysis_week10
+```
+
+Takes about a minute and writes every table and figure used in the report:
+
+```text
+factor_effects_within.csv          mean stability by each design factor
+factor_effects_between.csv         mean agreement with the reference by factor
+kruskal_wallis.csv                 H and Holm-adjusted p per factor x metric
+dunn_posthoc.csv                   pairwise Dunn tests, Holm-adjusted
+size_tradeoff.csv                  stability and runtime per background x evaluation size
+size_paired_tests.csv              each size vs the largest, matched on all other factors
+size_regression.csv                metric ~ log2(background size)
+top5_boundary.csv                  features ranked 4-6 per configuration, with gaps
+feature_importance_by_method.csv   median importance and rank per evaluation method
+topk_changes_vs_reference.csv      features entering / leaving the top 10
+top5_swaps_by_run.csv              per run: top-5 features differing from the reference
+top5_swap_summary.csv              swap rates and features involved, per evaluation method
+bootstrap_ci.csv                   95% bootstrap CI on each feature's mean |SHAP|
+stability_vs_background_size.png
+top5_by_evaluation_method.png
+temperature_importance_by_method.png
+cost_vs_stability.png
+summary.json                       headline numbers
+```
+
+Tests use configuration-level values (pairs within a configuration are not
+independent). Size comparisons pair each configuration with the one
+identical except for size; a non-significant result is not proof of
+equivalence, so median differences are reported alongside p-values.
+
+### Week 10 results
+
+**Whole-ranking repeatability rises with background size** (Kruskal–Wallis
+H = 44.0, p < 0.001):
+
+| Background size | Kendall's W | Top-5 Jaccard |
+|---|---:|---:|
+| 25 | 0.977 | 0.924 |
+| 50 | 0.984 | 0.966 |
+| 100 | 0.987 | 0.971 |
+| 200 | 0.991 | 0.971 |
+
+**Top-5 stability depends on the evaluation method** (H = 47.2,
+p < 0.001), not the background method (p = 0.98):
+
+| Evaluation method | Top-5 Jaccard | Runs with a different top 5 |
+|---|---:|---:|
+| Uniform | 0.992 | 1.2% |
+| Season-stratified | 0.991 | 1.4% |
+| Time-stratified | 0.988 | 1.8% |
+| Outcome-demand-stratified | 0.943 | 10.0% |
+| Rare-event-stratified | 0.876 | 27.6% |
+
+Under rare-event evaluation `temp_max` gains about a third in importance
+(mean |SHAP| 68.9 → 91.5 MW) and moves from 8th to 6th, entering the top 5
+in 186 of the 199 rare-event runs whose top 5 differed. Averaged over 30
+seeds, every configuration's consensus top 5 matches the reference, except
+that k-means backgrounds with rare-event evaluation leave 5th place a
+genuine tie (bootstrap intervals overlap).
+
+**RQ3, stability side:** against a 200-row background, 50 rows show no
+detectable top-5 loss (median difference 0.000, p = 0.77) at about a
+quarter of the cost; the top 10 needs 100 rows (p = 0.33). Kendall's W is
+slightly lower at every smaller size. Rare-event evaluation needs a
+100-row background. The final RQ3 answer awaits the RQ2 reliability
+results.
+
 ## Tests
 
 ```bash
@@ -601,7 +735,11 @@ python -m pytest -q tests/test_training.py
 python -m pytest -q tests/test_load_model.py tests/test_shap_pilot.py
 # sampling methods and the full grid
 python -m pytest -q tests/test_sampling.py tests/test_shap_experiment.py tests/test_shap_experiment_grid.py
+# analysis (RQ1, RQ3)
+python -m pytest -q tests/test_analyse_stability.py
 ```
+
+65 tests in total.
 
 The grid tests cover: Jaccard and Kendall's W correctness (including the
 identity linking W to mean Spearman, and ties at zero importance); that
@@ -609,6 +747,10 @@ within-condition pairs never cross configurations; resume after an
 interrupted run; extending seeds without recomputing; the manifest guard;
 and preflight failing before any SHAP runs. The sampling tests include
 k-means tolerating NaN features while returning real, unmodified rows.
+The analysis tests check Holm and Dunn against hand-calculated answers,
+the bootstrap intervals, matched pairing in the size tests, and run the
+full analysis on a synthetic grid built with `shap_experiment.py`'s own
+functions, so they test exactly the file formats the real grid produces.
 
 **Note:** if you hit a `_tkinter.TclError` about a missing `init.tcl` file
 when running tests on Windows, this is a known issue with Python installs
@@ -618,26 +760,19 @@ The tests already set `matplotlib.use("Agg")` to avoid needing a working
 Tkinter at all; if you still hit this in your own scripts, add the same
 line before importing `matplotlib.pyplot`.
 
-## Before Week 10
+## Before the final report (due Monday, Week 14)
 
-- [ ] Analyse `within_condition_stability.csv` by background size,
-      evaluation size and construction method (RQ1)
-- [ ] Analyse `between_condition_agreement.csv`: does the sampling design
-      change the consensus ranking? (RQ1)
-- [ ] Identify which configuration produced the minimum top-5 Jaccard
-      (0.429) and which features swap in and out of the top 5
-- [ ] Kruskal–Wallis with Dunn post-hoc across construction methods;
-      regression of stability against sample size to find the point of
-      diminishing returns (RQ3)
-- [ ] Bootstrap confidence intervals on each feature's mean |SHAP| (spec
-      metric, not yet computed)
-- [ ] Reliability checks: feature ablation and permutation-importance
-      agreement (RQ2)
-- [ ] Correct the additivity explanation with Zeehan (the L1-objective
-      account appeared on the Week 7 "Two Real Bugs" slide)
-- [ ] Back up `artifacts/shap_week9_grid` and share it with the team
+- [ ] RQ2: permutation importance and ablation on the reference and
+      candidate configurations (background 50 and 100 with evaluation
+      500), including temperature on rare-event vs ordinary days
+- [ ] Final RQ3 answer once reliability results are in
+- [ ] Abstract and conclusion, written last
+- [ ] Full read-through of the report and a test export to PDF/DOCX
+- [ ] Correct the additivity explanation with Zeehan, if not already done
+      (the L1-objective account appeared on the Week 7 slide)
+- [ ] Back up `artifacts/shap_week10_grid` and share it with the team
 
-## Completed checklist (Weeks 4-9)
+## Completed checklist (Weeks 4-10)
 
 - [x] All three data sources (AEMO, BOM, renewables.ninja) fetched,
       cleaned, and merged
@@ -657,3 +792,6 @@ line before importing `matplotlib.pyplot`.
       between-condition stability separated
 - [x] Real cause of additivity gaps identified and documented (split
       threshold coincidence with broadcast weather values)
+- [x] Grid extended to 120 configurations (3,600 runs), timed first
+- [x] Analysis script with statistical tests, paired size comparisons and
+      bootstrap intervals; RQ1 and the stability side of RQ3 analysed
