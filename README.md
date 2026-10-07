@@ -584,6 +584,32 @@ construction method, and how much the sampling design changes the
 answer, is in `within_condition_stability.csv` and
 `between_condition_agreement.csv`, and is Week 10's analysis.
 
+## RQ2: initial reliability checks
+
+`src/reliability.py` reads the supplied Week 10 SHAP-results zip without
+rerunning the grid. It checks frozen-model permutation importance and
+retrained feature-group ablations, with seed-matched controls and paired
+origin-day bootstrap intervals. See [RQ2 methodology](docs/rq2_methodology.md)
+for the protocol, interpretation limits, outputs and reproduction command.
+The [initial real-data results](docs/rq2_initial_results.md) distinguish
+fixed-model reliance from retrained utility and report uncertainty rather
+than treating positive point estimates as conclusive validation.
+
+```bash
+python src/reliability.py \
+  --data data/interim/merged_full.csv \
+  --artifacts artifacts/training_real \
+  --grid /path/to/shap_week10_grid.zip \
+  --protocol configs/rq2.json \
+  --output artifacts/rq2_initial
+```
+
+Use the exact supplied CSV used for the frozen model, not a newly rebuilt
+dataset. Choose a new output directory; frozen artifacts are never overwritten.
+Add `--preflight-only` to verify compatibility without permutations or fits.
+This is an exploratory, post-hoc reliability analysis, not an independent
+test-set model-selection exercise or a proof of SHAP correctness.
+
 ## Tests
 
 ```bash
@@ -597,6 +623,8 @@ Or by area:
 python -m pytest -q tests/test_fetch_aemo_native.py tests/test_merge_multi_resolution.py
 # training
 python -m pytest -q tests/test_training.py
+# RQ2 reliability
+python -m pytest -q tests/test_reliability.py
 # frozen model loader and single-configuration SHAP
 python -m pytest -q tests/test_load_model.py tests/test_shap_pilot.py
 # sampling methods and the full grid
