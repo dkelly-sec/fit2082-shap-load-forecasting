@@ -705,7 +705,7 @@ p < 0.001), not the background method (p = 0.98):
 | Rare-event-stratified | 0.876 | 27.6% |
 
 Under rare-event evaluation `temp_max` gains about a third in importance
-(mean |SHAP| 68.9 → 91.5 MW) and moves from 8th to 6th, entering the top 5
+(median across configurations of mean |SHAP|, 68.9 → 91.5 MW) and moves from 8th to 6th, entering the top 5
 in 186 of the 199 rare-event runs whose top 5 differed. Averaged over 30
 seeds, every configuration's consensus top 5 matches the reference, except
 that k-means backgrounds with rare-event evaluation leave 5th place a
