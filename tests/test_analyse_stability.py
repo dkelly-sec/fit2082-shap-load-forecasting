@@ -24,6 +24,7 @@ from analyse_stability import (  # noqa: E402
     holm_adjust,
     run_analysis,
     size_paired_tests,
+    sufficiency_by_condition,
     top5_swaps,
 )
 from shap_experiment import (  # noqa: E402
@@ -136,7 +137,7 @@ def test_end_to_end_writes_every_output(tmp_path):
     _synthetic_grid(grid)
     summary = run_analysis(grid, out, n_boot=200)
     expected = ["factor_effects_within.csv", "factor_effects_between.csv", "kruskal_wallis.csv",
-                "dunn_posthoc.csv", "size_tradeoff.csv", "size_paired_tests.csv", "size_regression.csv",
+                "dunn_posthoc.csv", "size_tradeoff.csv", "size_paired_tests.csv", "size_regression.csv", "sufficiency_by_condition.csv",
                 "top5_boundary.csv", "feature_importance_by_method.csv", "topk_changes_vs_reference.csv",
                 "top5_swaps_by_run.csv", "top5_swap_summary.csv", "bootstrap_ci.csv",
                 "stability_vs_background_size.png", "top5_by_evaluation_method.png",
@@ -165,3 +166,24 @@ def test_swap_detection_matches_a_direct_recount(tmp_path):
 def test_missing_grid_files_raise_clearly(tmp_path):
     with pytest.raises(FileNotFoundError, match="missing"):
         run_analysis(tmp_path / "nothing_here", tmp_path / "out")
+
+
+def test_sufficiency_splits_rare_events_and_applies_the_doubling_rule():
+    rows = []
+    # general: top-5 saturates at 50; rare-event: keeps gaining 0.02 per doubling
+    general = {25: 0.95, 50: 1.0, 100: 1.0, 200: 1.0}
+    rare = {25: 0.80, 50: 0.86, 100: 0.88, 200: 0.90}
+    for ev_method, curve in [("uniform", general), ("time_stratified", general),
+                             ("rare_event_stratified", rare)]:
+        for bg_size, j5 in curve.items():
+            rows.append({"config_id": f"{ev_method}-{bg_size}", "evaluation_method": ev_method,
+                         "evaluation_size": 500, "background_size": bg_size,
+                         "jaccard_top5_mean": j5, "jaccard_top10_mean": j5,
+                         "runtime_seconds_mean": bg_size / 10})
+    table = sufficiency_by_condition(pd.DataFrame(rows)).set_index(["condition", "background_size"])
+    assert table.loc[("general", 50), "configurations"] == 2
+    assert table.loc[("general", 25), "jaccard_top5_mean_gain_from_doubling"] == pytest.approx(0.05)
+    assert bool(table.loc[("general", 50), "jaccard_top5_mean_meets_gain_rule"]) is True
+    assert bool(table.loc[("rare_event", 100), "jaccard_top5_mean_meets_gain_rule"]) is False
+    assert pd.isna(table.loc[("rare_event", 200), "jaccard_top5_mean_gain_from_doubling"])
+    assert pd.isna(table.loc[("rare_event", 200), "jaccard_top5_mean_meets_gain_rule"])

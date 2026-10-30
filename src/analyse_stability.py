@@ -28,6 +28,9 @@ Outputs
       size_tradeoff.csv                stability and runtime per background x evaluation size
       size_paired_tests.csv            each size vs the largest, matched on all other factors
       size_regression.csv              metric ~ log2(background size)
+      sufficiency_by_condition.csv     top-5/top-10 stability and runtime by background size,
+                                       general vs rare-event evaluation, with the gain from
+                                       doubling the background (the RQ3 sufficiency rule)
       top5_boundary.csv                features ranked 4-6 per configuration, with gaps
       feature_importance_by_method.csv median importance and rank per evaluation method
       topk_changes_vs_reference.csv    features entering / leaving the top 10
@@ -53,6 +56,11 @@ Notes on the statistics
   identical except for the size being compared (Wilcoxon signed-rank).
   A non-significant result is NOT evidence of equivalence; read the median
   difference alongside the p-value.
+* A configuration is called sufficient for a metric when (i) its paired
+  difference from the largest size is not statistically detectable and
+  (ii) doubling its background improves the metric's mean by less than
+  SUFFICIENCY_GAIN (0.01). Rare-event evaluation is assessed separately,
+  using rule (ii) alone, since it has too few matched pairs to test.
 """
 
 from __future__ import annotations
@@ -76,6 +84,8 @@ BETWEEN_METRICS = ["spearman_vs_reference", "kendall_vs_reference",
                    "jaccard_top5_vs_reference", "jaccard_top10_vs_reference"]
 TEST_METRICS = ["kendalls_w", "jaccard_top5_mean", "jaccard_top10_mean"]
 NEAR_TIE_MW = 5.0
+SUFFICIENCY_GAIN = 0.01
+RARE_EVENT_METHOD = "rare_event_stratified"
 
 COLOURS = ["#1C7293", "#F2A541", "#0A2540", "#B5443C", "#5B8C5A"]
 
@@ -318,6 +328,31 @@ def size_paired_tests(within: pd.DataFrame, metrics=TEST_METRICS) -> pd.DataFram
     return table
 
 
+def sufficiency_by_condition(within: pd.DataFrame, gain_threshold: float = SUFFICIENCY_GAIN) -> pd.DataFrame:
+    """Stability and runtime by background size, separately for general and rare-event evaluation.
+
+    For each condition and evaluation size, ``*_gain_from_doubling`` is the change in the mean
+    metric when moving to the next larger background size, and ``*_meets_gain_rule`` is True
+    when that gain is below ``gain_threshold`` (NaN at the largest size, which has no larger
+    size to compare with).
+    """
+    frame = within.assign(condition=np.where(within["evaluation_method"] == RARE_EVENT_METHOD,
+                                             "rare_event", "general"))
+    table = (frame.groupby(["condition", "evaluation_size", "background_size"])
+             .agg(configurations=("config_id", "count"),
+                  jaccard_top5_mean=("jaccard_top5_mean", "mean"),
+                  jaccard_top10_mean=("jaccard_top10_mean", "mean"),
+                  mean_seconds_per_run=("runtime_seconds_mean", "mean"))
+             .reset_index()
+             .sort_values(["condition", "evaluation_size", "background_size"]))
+    keys = ["condition", "evaluation_size"]
+    for metric in ["jaccard_top5_mean", "jaccard_top10_mean"]:
+        gain = table.groupby(keys)[metric].shift(-1) - table[metric]
+        table[f"{metric}_gain_from_doubling"] = gain
+        table[f"{metric}_meets_gain_rule"] = (gain < gain_threshold).where(gain.notna())
+    return table.reset_index(drop=True)
+
+
 def size_regression(within: pd.DataFrame, metrics=TEST_METRICS) -> pd.DataFrame:
     """metric ~ a + b * log2(background_size), overall and per evaluation method."""
     rows = []
@@ -441,6 +476,7 @@ def run_analysis(grid_dir: Path, output_dir: Path, n_boot: int = 2000) -> dict:
     tradeoff = size_tradeoff(within, runs)
     paired = size_paired_tests(within)
     regression = size_regression(within)
+    sufficiency = sufficiency_by_condition(within)
     boundary = top5_boundary(consensus, within)
     importance = feature_importance_by_method(consensus, within)
     topk = topk_changes_vs_reference(consensus, within, reference)
@@ -455,6 +491,7 @@ def run_analysis(grid_dir: Path, output_dir: Path, n_boot: int = 2000) -> dict:
         "size_tradeoff.csv": tradeoff,
         "size_paired_tests.csv": paired,
         "size_regression.csv": regression,
+        "sufficiency_by_condition.csv": sufficiency,
         "top5_boundary.csv": boundary,
         "feature_importance_by_method.csv": importance,
         "topk_changes_vs_reference.csv": topk,

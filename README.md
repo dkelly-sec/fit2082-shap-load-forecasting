@@ -12,7 +12,81 @@ against a seasonal-naive baseline — wires up a TreeSHAP explainer verified
 mathematically — and runs the full repeated-sampling SHAP grid that
 measures how stable global feature rankings are across sampling designs.
 
+**Status: complete.** FIT2082 Project 13, David Kelly and Xuanwei Xu,
+supervised by Zeehan Saleheen (Monash University, 2026). The final report
+source is in [`report/`](report/).
+
+## Final results
+
+The study explained one frozen LightGBM model of Victorian electricity
+demand (24 hours ahead, test MAE 397.49 MW, 24.1% better than a
+seasonal-naive forecast) with exact interventional TreeSHAP, varying how
+the SHAP samples are drawn: 3 background methods × 4 background sizes ×
+5 evaluation methods × 2 evaluation sizes = 120 configurations, each
+repeated with 30 seeds (**3,600 runs**).
+
+**RQ1 – Do sampling choices change the ranking?** Whole rankings are very
+repeatable under every design (Kendall's W 0.963–0.997), but the top five
+is not. Background choices drive how repeatable the whole ranking is;
+evaluation method drives which features reach the top. Rare-event
+evaluation (public holidays and temperature extremes) changes the top five
+in 27.6% of runs, against 1–2% for ordinary sampling, because `temp_max`
+rises from 8th to 6th:
+
+| Evaluation method | Runs changed | Entered (runs) | Left (runs) |
+|---|---:|---|---|
+| Uniform | 9 / 720 | `temp_max` (9) | `lag_10min` (8), `origin_hour_of_day` (1) |
+| Time-stratified | 13 / 720 | `temp_max` (12), `roll_mean_24h` (1) | `lag_10min` (11), `origin_hour_of_day` (2) |
+| Season-stratified | 10 / 720 | `temp_max` (10) | `lag_10min` (9), `origin_hour_of_day` (1) |
+| Rare-event | 199 / 720 | `temp_max` (186), `roll_mean_24h` (13) | `origin_hour_of_day` (121), `lag_10min` (65), `day_of_year` (13) |
+| Outcome-demand | 72 / 720 | `lag_1week` (68), `temp_max` (6) | `day_of_year` (55), `day_of_week` (19) |
+
+Averaging the 30 seeds recovers the reference top five (`lag_5min`,
+`day_of_week`, `day_of_year`, `origin_hour_of_day`, `lag_10min`) in all 119
+other configurations.
+
+**RQ2 – Do the rankings reflect real predictive importance?** SHAP agrees
+substantially but not fully with permutation importance (mean Spearman
+about 0.83; four of the top five shared in every configuration). Removing
+feature groups and retraining confirms that calendar (+45.4 MW MAE) and
+temperature (+44.0 MW) features carry real predictive value, while recent
+demand costs almost nothing to remove despite the largest permutation
+effect, because correlated demand features substitute for it. Removing
+temperature costs about 123 MW more on rare-event days than ordinary days,
+in the same direction as RQ1, but with only seven rare-event days the
+bootstrap intervals include zero.
+
+**RQ3 – What is the smallest sufficient configuration?** A configuration is
+*sufficient* when it is not detectably worse than the largest (Holm-adjusted
+Wilcoxon) and doubling its background gains less than 0.01. Agreement with
+permutation importance did not depend on background size.
+
+| Purpose | Background (with 500 evaluation rows) | SHAP cost vs largest |
+|---|---|---:|
+| General evaluation, top five | 50 rows (top-5 Jaccard 1.000) | 26% |
+| General evaluation, top ten | 100 rows | 52% |
+| Rare-event evaluation | 100 rows, averaged over several seeds (no size within the tested range meets the rule) | 52% |
+| Whole-ranking agreement | Largest affordable (still improving at 200) | – |
+
+**Main recommendation:** treat a SHAP ranking as a property of its sampling
+design. Report the samples used, check the top features rather than only a
+whole-ranking correlation, and rank rare conditions separately when
+decisions depend on them.
+
 ## Project status (running log, most recent first)
+
+- **Weeks 11-14:** RQ2 completed by Xuanwei Xu: permutation importance
+  (26 features and 6 feature groups, 10 repeats) compared with SHAP across
+  all 120 configurations, plus removal-and-retraining ablation of each
+  feature group and of `temp_max` alone (3 seeds, 24 fits), with a
+  day-cluster bootstrap for the rare-day contrast. Full report drafted in
+  LaTeX and revised after supervisor feedback: an explicit definition of a
+  sufficient configuration, separate recommendations for general and
+  rare-event evaluation, a table of features entering and leaving the top
+  five, a clearer description of the reference ranking, and explicit
+  uncertainty for the rare-event ablation. `analyse_stability.py` now also
+  writes `sufficiency_by_condition.csv`. Final presentation given in
+  Week 12.
 
 - **Week 10:** Grid extended on supervisor advice by adding background
   sizes 25 and 100, after first timing one seed of each new
@@ -26,8 +100,7 @@ measures how stable global feature rankings are across sampling designs.
   (against 1–2% for uniform, time- and season-stratified), because
   `temp_max` rises from 8th to 6th under rare conditions. For the top 5,
   a 50-row background matches 200 at about a quarter of the cost; the top
-  10 needs 100. Final report drafting under way; RQ2 (reliability) in
-  progress.
+  10 needs 100.
 - **Week 9:** Full RQ1 sampling grid completed: 60 configurations
   (3 background methods × 2 background sizes × 5 evaluation methods ×
   2 evaluation sizes) × 30 seeds = **1,800 SHAP runs** against the frozen
@@ -61,8 +134,9 @@ measures how stable global feature rankings are across sampling designs.
   frozen-model provenance mismatch (see below). The additivity gaps seen
   in Week 7 were originally misattributed; the real cause was found in
   Week 9.
-- **Weeks 5-6:** LightGBM forecaster trained and tuned via time-series CV
-  with a purged chronological split, validated against a seasonal-naive
+- **Weeks 5-6:** LightGBM forecaster trained and tuned by comparing three
+  candidate settings on one purged chronological validation split, with
+  early stopping (50 rounds), and validated against a seasonal-naive
   baseline (~24.1% lower test MAE). Model, features, hyperparameters, and
   split boundaries are now **frozen** for Week 7 onward.
 - **Week 4:** Full data pipeline complete — AEMO demand (native 5-min),
@@ -663,6 +737,8 @@ dunn_posthoc.csv                   pairwise Dunn tests, Holm-adjusted
 size_tradeoff.csv                  stability and runtime per background x evaluation size
 size_paired_tests.csv              each size vs the largest, matched on all other factors
 size_regression.csv                metric ~ log2(background size)
+sufficiency_by_condition.csv       stability and runtime by background size, general vs
+                                   rare-event evaluation, with the gain from doubling
 top5_boundary.csv                  features ranked 4-6 per configuration, with gaps
 feature_importance_by_method.csv   median importance and rank per evaluation method
 topk_changes_vs_reference.csv      features entering / leaving the top 10
@@ -714,9 +790,9 @@ genuine tie (bootstrap intervals overlap).
 **RQ3, stability side:** against a 200-row background, 50 rows show no
 detectable top-5 loss (median difference 0.000, p = 0.77) at about a
 quarter of the cost; the top 10 needs 100 rows (p = 0.33). Kendall's W is
-slightly lower at every smaller size. Rare-event evaluation needs a
-100-row background. The final RQ3 answer awaits the RQ2 reliability
-results.
+slightly lower at every smaller size. The final RQ3 answer, combining
+stability with the RQ2 reliability results, is under
+[Final results](#final-results).
 
 ## Tests
 
@@ -739,7 +815,8 @@ python -m pytest -q tests/test_sampling.py tests/test_shap_experiment.py tests/t
 python -m pytest -q tests/test_analyse_stability.py
 ```
 
-65 tests in total.
+66 tests in total. (`test_fetch_aemo_native.py` needs the `nemosis`
+package; the other 62 run without it.)
 
 The grid tests cover: Jaccard and Kendall's W correctness (including the
 identity linking W to mean Spearman, and ties at zero importance); that
@@ -760,19 +837,36 @@ The tests already set `matplotlib.use("Agg")` to avoid needing a working
 Tkinter at all; if you still hit this in your own scripts, add the same
 line before importing `matplotlib.pyplot`.
 
-## Before the final report (due Monday, Week 14)
+## RQ2 reliability code
 
-- [ ] RQ2: permutation importance and ablation on the reference and
-      candidate configurations (background 50 and 100 with evaluation
-      500), including temperature on rare-event vs ordinary days
-- [ ] Final RQ3 answer once reliability results are in
-- [ ] Abstract and conclusion, written last
-- [ ] Full read-through of the report and a test export to PDF/DOCX
-- [ ] Correct the additivity explanation with Zeehan, if not already done
-      (the L1-objective account appeared on the Week 7 slide)
-- [ ] Back up `artifacts/shap_week10_grid` and share it with the team
+The RQ2 permutation-importance and ablation analysis was run by Xuanwei Xu
+from the frozen model and the saved grid configuration (evaluation samples
+regenerated from their seeds using `src/sampling.py`, with the evaluation
+seed offset of 100,000 in `src/shap_experiment.py`). Its scripts and
+output tables are to be added under `rq2/`.
 
-## Completed checklist (Weeks 4-10)
+## Limitations and future work
+
+- **Rank-selected ablation:** remove each recommended configuration's own
+  top five against its bottom five (a fixed reference ranking is
+  sufficient), to complete the reliability side of RQ3.
+- **Seasons and rare days:** the test period (14 Sep – 29 Dec 2025) covers
+  spring and early summer only, with seven rare-event days. A full-year
+  test period or rolling forecast origins would cover winter and give more
+  rare days.
+- **Weather resolution:** BOM temperatures are daily values repeated
+  across five-minute rows, which hides within-day changes, causes the
+  additivity ties, and gives early-day forecasts a small look-ahead on the
+  day's maximum.
+- **Sample sizes:** backgrounds were capped at 200 rows and evaluation
+  samples at 500; whole-ranking stability was still improving at 200.
+- **Averaging small runs:** test directly whether averaging several small
+  runs matches one large run at equal cost.
+- **Stored row identifiers:** save evaluation row IDs with each run so later
+  checks use exactly the same samples.
+- **Generalisation:** one model type, region, horizon and period.
+
+## Completed checklist
 
 - [x] All three data sources (AEMO, BOM, renewables.ninja) fetched,
       cleaned, and merged
@@ -795,3 +889,10 @@ line before importing `matplotlib.pyplot`.
 - [x] Grid extended to 120 configurations (3,600 runs), timed first
 - [x] Analysis script with statistical tests, paired size comparisons and
       bootstrap intervals; RQ1 and the stability side of RQ3 analysed
+- [x] RQ2: permutation importance across all 120 configurations, feature-group
+      ablation, and the rare-day temperature contrast
+- [x] Final RQ3 answer with an explicit sufficiency rule, separately for
+      general and rare-event evaluation
+- [x] Full report written in LaTeX and revised after supervisor feedback
+- [x] Additivity explanation corrected (split-threshold ties, not the L1
+      objective)
