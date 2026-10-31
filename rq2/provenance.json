@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "analysis_date": "2026-10-07",
+  "packaged_date": "2026-11-01",
+  "source_repository_commit_at_run": "4f49151da7c4af97b03310894e7fe880fafb419c",
+  "source_sha256_at_run": "4ca99942dcfb0534c097b50f3310ae68f0b59a43078754e82e0618e3edf36ad4",
+  "post_run_audit": {
+    "status": "passed",
+    "inputs_unchanged": true,
+    "saved_models_verified": 24,
+    "cohort_metrics_recomputed": 120,
+    "saved_samples_checked": 300,
+    "maximum_saved_prediction_gap_mw": 9.094947017729282e-13,
+    "named_prediction_patch_preserves_temperature_permutation": true,
+    "run_source_sha256": "4ca99942dcfb0534c097b50f3310ae68f0b59a43078754e82e0618e3edf36ad4",
+    "current_source_sha256": "4787ca3c34221dfe734b8c5fc1f0686ec88f206cde95b1b12d8414b8c9e81281",
+    "post_run_change": "Named prediction frames, finite guards, and report wording; run manifest remains unchanged."
+  },
+  "packaged_analysis_source_sha256": "dc97c1bce70e0fe9020989209f665ced29ef195687b3044f6ce774e58426ee0c",
+  "packaged_analysis_normalised_lf_sha256": "dc97c1bce70e0fe9020989209f665ced29ef195687b3044f6ce774e58426ee0c",
+  "packaged_source_repository_commit": "b294bf5",
+  "code_note": "reliability.py is a byte-for-byte copy of src/reliability.py from local commit b294bf5, relocated into rq2/. Its hash differs from both historical run and post-run audit hashes, including after LF normalisation; it is not claimed to be the exact historical executable snapshot. The saved output tables are unchanged and independently checked. run.py only supplies imports/default protocol location.",
+  "versions": {
+    "python": "3.13.2",
+    "numpy": "2.5.2",
+    "pandas": "3.0.5",
+    "lightgbm": "4.7.0",
+    "scikit_learn": "1.9.0",
+    "scipy": "1.18.1",
+    "joblib": "1.5.3"
+  },
+  "original_protocol_sha256": "3fc9193b0134586d970bab313237fa98407858c46f058822b24f960fc7193913",
+  "packaged_protocol_sha256": "3fc9193b0134586d970bab313237fa98407858c46f058822b24f960fc7193913",
+  "protocol": {
+    "schema_version": 1,
+    "random_seed": 20821006,
+    "prediction_threads": 4,
+    "full_test_permutation_repeats": 10,
+    "bootstrap_repeats": 2000,
+    "training_seeds": [
+      2082,
+      2083,
+      2084
+    ],
+    "groups": {
+      "temperature": [
+        "temp_min",
+        "temp_max",
+        "temperature",
+        "irr_temperature"
+      ],
+      "irradiance": [
+        "irr_electricity",
+        "irr_irradiance_direct",
+        "irr_irradiance_diffuse"
+      ],
+      "recent_demand": [
+        "lag_5min",
+        "lag_10min",
+        "lag_15min"
+      ],
+      "seasonal_demand": [
+        "lag_1day",
+        "lag_1week",
+        "demand_lag_288",
+        "demand_lag_2016"
+      ],
+      "rolling_demand": [
+        "roll_mean_1h",
+        "roll_std_1h",
+        "roll_mean_24h",
+        "roll_std_24h"
+      ],
+      "calendar": [
+        "day_of_week",
+        "is_weekend",
+        "is_public_holiday",
+        "origin_hour_of_day",
+        "hour",
+        "minute",
+        "month",
+        "day_of_year"
+      ]
+    },
+    "supplementary_ablations": {
+      "temp_max_only": [
+        "temp_max"
+      ]
+    },
+    "matched_evaluation_seed_offset": 100000,
+    "notes": "Initial RQ2 protocol fixed before computing RQ2 outcomes, after observing RQ1. Exploratory reliability checks, not preregistered confirmatory tests. Fixed 678-round ablations and seed-matched full-feature controls. No test-set tuning."
+  },
+  "frozen_test_metrics": {
+    "mae": 397.49218122355916,
+    "rmse": 554.5011665226502,
+    "mape_percent": 10.144182530209841,
+    "n": 30799
+  },
+  "splits": {
+    "train": {
+      "origin_start": "2024-01-15T00:05:00",
+      "origin_end": "2025-05-28T01:55:00",
+      "target_start": "2024-01-16T00:05:00",
+      "target_end": "2025-05-29T01:55:00",
+      "rows": 143723
+    },
+    "validation": {
+      "origin_start": "2025-05-29T02:00:00",
+      "origin_end": "2025-09-13T00:20:00",
+      "target_start": "2025-05-30T02:00:00",
+      "target_end": "2025-09-14T00:20:00",
+      "rows": 30797
+    },
+    "test": {
+      "origin_start": "2025-09-14T00:25:00",
+      "origin_end": "2025-12-29T23:55:00",
+      "target_start": "2025-09-15T00:25:00",
+      "target_end": "2025-12-30T23:55:00",
+      "rows": 30799
+    }
+  },
+  "feature_names": [
+    "day_of_week",
+    "is_weekend",
+    "is_public_holiday",
+    "temp_min",
+    "temp_max",
+    "temperature",
+    "irr_electricity",
+    "irr_irradiance_direct",
+    "irr_irradiance_diffuse",
+    "irr_temperature",
+    "lag_5min",
+    "lag_10min",
+    "lag_15min",
+    "lag_1day",
+    "lag_1week",
+    "roll_mean_1h",
+    "roll_std_1h",
+    "roll_mean_24h",
+    "roll_std_24h",
+    "origin_hour_of_day",
+    "hour",
+    "minute",
+    "month",
+    "day_of_year",
+    "demand_lag_288",
+    "demand_lag_2016"
+  ],
+  "duplicate_features": [
+    [
+      "lag_1day",
+      "demand_lag_288"
+    ],
+    [
+      "lag_1week",
+      "demand_lag_2016"
+    ]
+  ],
+  "rare_event_definition": {
+    "temperature_low_quantile": 0.05,
+    "temperature_high_quantile": 0.95,
+    "temperature_low": 9.45,
+    "temperature_high": 26.35,
+    "includes_public_holidays": true
+  },
+  "outcome_definition": {
+    "demand_quantile": 0.95,
+    "demand_high": 6779.870999999999,
+    "target_column": "demand"
+  },
+  "cohort_rows": {
+    "all": 30799,
+    "rare": 2016,
+    "ordinary": 28783,
+    "extreme_temperature": 864,
+    "public_holiday": 1152
+  },
+  "cohort_origin_days": {
+    "all": 107,
+    "rare": 7,
+    "ordinary": 100,
+    "extreme_temperature": 3,
+    "public_holiday": 4
+  },
+  "external_input_sha256": {
+    "training_input_csv": "e48f9870c9924a80556787fb82994569dcb23391605d23e9d7da7634442349e4",
+    "training_config": "8510c90bb1e409993d4297d5d4635df5fc60e0b549919fb986ca2dc808b44511",
+    "shap_week10_grid_zip": "95bc961187e58b690bdc074977e7b49ded5ebafa436bb00f5db3543ed36ece21",
+    "model.joblib": "29d6f4aa920e5ae576917527167a751c894e9affa03f8c96da85eb0f850ebe33",
+    "feature_names.json": "a6007d39bdc7be855272b8445df72739a8b025fac83d2db9724979bbd8e79ca7",
+    "split_metadata.json": "ff09fdc286013464c6a448d12b7d6573674a9f66c5e0ef7e8c89c1aaa14cbdc5"
+  },
+  "archive_limitations": "SHAP archive lacks model/data content hashes and row IDs. Sampling reconstructed from current shared code and seed offset; original sampled rows cannot be independently proven identical.",
+  "interpretation": "Exploratory post-hoc reliability checks. Existing test set is reused for inspection, not a new independent final evaluation. PFI/SHAP measure different estimands; neither is ground truth.",
+  "saved_tables": {
+    "ablation_day_bootstrap.csv": {
+      "sha256": "791aeeb5b90e01f0a880395aa1b45d7cd2463850dca793d834ff5a8105020b8a",
+      "rows": 144,
+      "source": "Completed RQ2 output, 7 October 2026"
+    },
+    "ablation_metrics.csv": {
+      "sha256": "741fcef34669e7a561d01e2ceacbf98adb3cb838d50f5317be3be50d8402d36f",
+      "rows": 120,
+      "source": "Completed RQ2 output, 7 October 2026"
+    },
+    "permutation_full_test_runs.csv": {
+      "sha256": "02923f28862e910d6944e25bc0f2ad3d25b0b103001279eb39bd98251db4d103",
+      "rows": 1620,
+      "source": "Completed RQ2 output, 7 October 2026"
+    },
+    "permutation_full_test_summary.csv": {
+      "sha256": "5af01d91d883b4487fed400725a9ee5f3a00311592285d0dac055f29d5cb7f82",
+      "rows": 162,
+      "source": "Completed RQ2 output, 7 October 2026"
+    },
+    "permutation_matched_runs.csv": {
+      "sha256": "a52d952edce593c0d545d4e764dd3250505cb0a6454df534b02f8c1e003c8df3",
+      "rows": 7800,
+      "source": "Completed RQ2 output, 7 October 2026"
+    },
+    "permutation_matched_summary.csv": {
+      "sha256": "7bc487a0af5084731346785309fbaa9f75f3fd0b3a1c2d21b1b3077d76cd5bcb",
+      "rows": 260,
+      "source": "Completed RQ2 output, 7 October 2026"
+    },
+    "shap_consensus_importance.csv": {
+      "sha256": "728a933963b3c53acc60a5da196ba5b332d80c54d7219368de0c0fefff1d1a40",
+      "rows": 26,
+      "source": "Week 10 zip: consensus_rankings.csv"
+    },
+    "shap_permutation_agreement.csv": {
+      "sha256": "a8492620b364ec62d3b5ddb86c0916165aa384c547480a8837670b015c31f562",
+      "rows": 120,
+      "source": "Completed RQ2 output, 7 October 2026"
+    },
+    "training_timings.csv": {
+      "sha256": "d45aca193c7e4d7565617387c655503b8ca7f73698dd01950911a79888762109",
+      "rows": 24,
+      "source": "Completed RQ2 output, 7 October 2026"
+    }
+  }
+}

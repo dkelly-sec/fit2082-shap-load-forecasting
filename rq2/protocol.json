@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "random_seed": 20821006,
+  "prediction_threads": 4,
+  "full_test_permutation_repeats": 10,
+  "bootstrap_repeats": 2000,
+  "training_seeds": [2082, 2083, 2084],
+  "groups": {
+    "temperature": ["temp_min", "temp_max", "temperature", "irr_temperature"],
+    "irradiance": ["irr_electricity", "irr_irradiance_direct", "irr_irradiance_diffuse"],
+    "recent_demand": ["lag_5min", "lag_10min", "lag_15min"],
+    "seasonal_demand": ["lag_1day", "lag_1week", "demand_lag_288", "demand_lag_2016"],
+    "rolling_demand": ["roll_mean_1h", "roll_std_1h", "roll_mean_24h", "roll_std_24h"],
+    "calendar": ["day_of_week", "is_weekend", "is_public_holiday", "origin_hour_of_day", "hour", "minute", "month", "day_of_year"]
+  },
+  "supplementary_ablations": {"temp_max_only": ["temp_max"]},
+  "matched_evaluation_seed_offset": 100000,
+  "notes": "Initial RQ2 protocol fixed before computing RQ2 outcomes, after observing RQ1. Exploratory reliability checks, not preregistered confirmatory tests. Fixed 678-round ablations and seed-matched full-feature controls. No test-set tuning."
+}
