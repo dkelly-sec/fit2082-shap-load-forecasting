@@ -1,0 +1,11 @@
+evaluation_method,evaluation_size,shap_only,permutation_only,configurations
+outcome_demand_stratified,100,day_of_week,lag_1week,12
+outcome_demand_stratified,500,day_of_year,lag_1week,12
+rare_event_stratified,100,day_of_year,temp_max,12
+rare_event_stratified,500,day_of_year,temp_max,12
+season_stratified,100,day_of_year,temp_max,12
+season_stratified,500,day_of_year,temp_max,12
+time_stratified,100,day_of_year,temp_max,12
+time_stratified,500,day_of_year,temp_max,12
+uniform,100,day_of_year,temp_max,12
+uniform,500,day_of_year,temp_max,12

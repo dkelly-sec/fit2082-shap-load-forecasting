@@ -1,0 +1,5 @@
+# Preserve the byte hashes of the saved scientific evidence on every platform.
+results/*.csv -text whitespace=cr-at-eol
+reliability.py -text
+protocol.json -text
+summary/*.csv text eol=lf

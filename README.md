@@ -842,8 +842,12 @@ line before importing `matplotlib.pyplot`.
 The RQ2 permutation-importance and ablation analysis was run by Xuanwei Xu
 from the frozen model and the saved grid configuration (evaluation samples
 regenerated from their seeds using `src/sampling.py`, with the evaluation
-seed offset of 100,000 in `src/shap_experiment.py`). Its scripts and
-output tables are to be added under `rq2/`.
+seed offset of 100,000 in `src/shap_experiment.py`). The scripts, original
+result tables, portable provenance and reproduction commands are in
+[`rq2/`](rq2/README.md). Check the saved results without model/data files
+or retraining using `python rq2/summarise_results.py`. Derived summaries
+include the background/evaluation-size breakdown and top-five membership
+differences used in the report.
 
 ## Limitations and future work
 
